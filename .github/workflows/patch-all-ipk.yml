@@ -15,272 +15,102 @@ on:
 
 permissions:
   contents: write
-  packages: write
-  actions: read
 
 jobs:
-  patch-and-upload:
+  patch:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v4
     
-    - name: Setup environment
+    - name: Setup and Patch
       run: |
-        # 解压工具包
+        # 准备工具
         unzip activator_linux.zip
-        chmod +x activator
-        chmod +x upx
-        
-        # 设置库路径
+        chmod +x activator upx
         export LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH
         
-        # 创建输出目录
-        mkdir -p patched_files
-    
-    - name: Process IPK files
-      run: |
-        # 设置变量
+        # 变量
         SN="${{ github.event.inputs.serial_number }}"
         DEVICES="${{ github.event.inputs.device_count }}"
         
-        echo "========================================="
-        echo "Serial Number: $SN"
-        echo "Device Count: $DEVICES"
-        echo "========================================="
-        
-        # 导出环境变量
-        export LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH
-        
-        # 用于存储第一次成功的License
-        LICENSE_KEY=""
+        # 创建输出目录
+        mkdir -p patched_files
         
         # 处理每个IPK文件
-        for ipk_file in ipk/*.ipk; do
-          if [ -f "$ipk_file" ]; then
-            echo ""
-            echo "========================================="
-            echo "Processing: $ipk_file"
-            echo "========================================="
+        for ipk in ipk/*.ipk; do
+          if [ -f "$ipk" ]; then
+            echo "Processing: $ipk"
+            filename=$(basename "$ipk")
             
-            # 获取文件名（不含路径）
-            filename=$(basename "$ipk_file")
+            # 创建工作目录
+            rm -rf work
+            mkdir work
+            cd work
             
-            # 创建临时目录
-            temp_dir="temp_work"
-            rm -rf "$temp_dir"
-            mkdir -p "$temp_dir"
+            # 解压IPK
+            tar -xzf "../$ipk" 2>/dev/null || ar x "../$ipk"
             
-            # 解压IPK文件
-            echo "Step 1: Extracting IPK file..."
+            # 如果是ar格式，解压data.tar.gz
+            if [ -f "data.tar.gz" ]; then
+              tar -xzf data.tar.gz
+              rm -f *.tar.gz debian-binary
+            fi
             
-            # 尝试tar.gz格式
-            if tar -xzf "$ipk_file" -C "$temp_dir" 2>/dev/null; then
-              echo "Extracted as tar.gz format"
-            # 尝试ar格式（OpenWrt ipk）
-            elif ar -x "$ipk_file" 2>/dev/null; then
-              echo "Extracted as ar format"
-              # 解压data.tar.gz到temp_dir
-              if [ -f "data.tar.gz" ]; then
-                tar -xzf data.tar.gz -C "$temp_dir"
-                rm -f control.tar.gz data.tar.gz debian-binary
+            # 查找vhusbd文件
+            VHUSBD=$(find . -name "vhusbd*" -type f ! -name "*.exe" | head -1)
+            
+            if [ -n "$VHUSBD" ]; then
+              echo "Found: $VHUSBD"
+              
+              # 步骤1: 解压
+              ../upx -d "$VHUSBD" 2>/dev/null || true
+              
+              # 步骤3: 打补丁
+              echo "Patching..."
+              OUTPUT=$(../activator "$VHUSBD" "$DEVICES" "$SN" 2>&1)
+              echo "$OUTPUT"
+              
+              # 提取License
+              LICENSE=$(echo "$OUTPUT" | grep "License=" | sed 's/.*License=//')
+              if [ -n "$LICENSE" ]; then
+                echo "$LICENSE" > "../patched_files/${SN}_license.txt"
+                echo "License: $LICENSE"
               fi
-            # 尝试普通tar
-            elif tar -xf "$ipk_file" -C "$temp_dir" 2>/dev/null; then
-              echo "Extracted as tar format"
-            else
-              echo "Warning: Could not extract $ipk_file, skipping..."
-              continue
-            fi
-            
-            # 查找vhusbd二进制文件
-            echo "Step 2: Looking for vhusbd binary..."
-            VHUSBD_FILE=$(find "$temp_dir" -type f KATEX_INLINE_OPEN -name "vhusbd" -o -name "vhusbdarm" -o -name "vhusbdmipsel" -o -name "vhusbdmips" -o -name "vhusbdi386" -o -name "vhusbdx86_64" KATEX_INLINE_CLOSE ! -name "*.exe" | head -1)
-            
-            if [ -z "$VHUSBD_FILE" ]; then
-              echo "No vhusbd binary found in $ipk_file, skipping..."
-              rm -rf "$temp_dir"
-              continue
-            fi
-            
-            echo "Found binary: $VHUSBD_FILE"
-            
-            # 步骤1: 用UPX解压二进制文件
-            echo ""
-            echo "Step 3: Unpacking binary with UPX..."
-            echo "Command: upx -d $VHUSBD_FILE"
-            ./upx -d "$VHUSBD_FILE" 2>&1 || echo "Note: Binary may not be UPX packed, continuing..."
-            
-            # 步骤3: 用activator打补丁
-            echo ""
-            echo "Step 4: Patching with activator..."
-            echo "Command: activator $VHUSBD_FILE $DEVICES $SN"
-            echo "----------------------------------------"
-            
-            # 运行activator并捕获输出
-            ACTIVATOR_OUTPUT=$(./activator "$VHUSBD_FILE" "$DEVICES" "$SN" 2>&1)
-            echo "$ACTIVATOR_OUTPUT"
-            echo "----------------------------------------"
-            
-            # 从输出中提取License
-            if [ -z "$LICENSE_KEY" ]; then
-              # 查找包含License=的行
-              LICENSE_LINE=$(echo "$ACTIVATOR_OUTPUT" | grep "License=" | head -1)
-              if [ -n "$LICENSE_LINE" ]; then
-                # 提取License=后面的内容
-                LICENSE_KEY=$(echo "$LICENSE_LINE" | sed 's/.*License=//')
-                
-                # 清理可能的空格
-                LICENSE_KEY=$(echo "$LICENSE_KEY" | tr -d ' \r')
-                
-                echo ""
-                echo ">>> Extracted License Key: $LICENSE_KEY"
-                echo ""
-                
-                # 保存License到文件
-                echo "$LICENSE_KEY" > "patched_files/${SN}_license.txt"
-                
-                # 创建详细说明文件
-                {
-                  echo "VirtualHere USB Server - Patched Version"
-                  echo "========================================="
-                  echo ""
-                  echo "Serial Number: $SN"
-                  echo "Device Count: $DEVICES"
-                  echo "License Key: $LICENSE_KEY"
-                  echo ""
-                  echo "Installation Instructions:"
-                  echo "--------------------------"
-                  echo "1. Install the patched IPK file (${SN}${filename}) on your device"
-                  echo "2. Start the VirtualHere USB server"
-                  echo "3. In VirtualHere Client:"
-                  echo "   - Go to USB Servers -> License -> Enter Key"
-                  echo "   - Enter this key: $LICENSE_KEY"
-                  echo "4. You should see: USB Hub,s/n=$SN,$DEVICES devices"
-                  echo ""
-                  echo "Note: If devices require authorization after activation,"
-                  echo "      try reducing the device count."
-                  echo ""
-                  echo "Patch Details:"
-                  echo "--------------"
-                  echo "$ACTIVATOR_OUTPUT"
-                } > "patched_files/README_${SN}.txt"
-              else
-                echo "No License line found in activator output"
-              fi
-            fi
-            
-            # 检查补丁是否成功
-            if echo "$ACTIVATOR_OUTPUT" | grep -q "patched"; then
-              echo ""
-              echo "Step 5: Patch successful, repacking with UPX..."
-              echo "Command: upx -9 $VHUSBD_FILE"
-              ./upx -9 "$VHUSBD_FILE" 2>&1 || echo "Note: Compression skipped"
-            else
-              echo "Warning: Patch may have failed, check the output above"
-            fi
-            
-            # 重新打包IPK文件
-            echo ""
-            echo "Step 6: Repacking IPK file..."
-            cd "$temp_dir"
-            
-            # 根据原始格式重新打包
-            OUTPUT_FILE="../patched_files/${SN}${filename}"
-            
-            # 尝试创建tar.gz格式
-            if tar -czf "$OUTPUT_FILE" . 2>/dev/null; then
-              echo "Repacked as tar.gz: ${SN}${filename}"
-            else
-              echo "Failed to repack, trying zip format..."
-              zip -r "$OUTPUT_FILE" . >/dev/null 2>&1
+              
+              # 步骤4: 压缩
+              ../upx -9 "$VHUSBD" 2>/dev/null || true
+              
+              # 重新打包IPK
+              tar -czf "../patched_files/${SN}${filename}" *
+              echo "Created: ${SN}${filename}"
             fi
             
             cd ..
-            
-            # 清理
-            rm -rf "$temp_dir"
-            
-            echo ""
-            echo "Completed: ${SN}${filename}"
-            echo "========================================="
           fi
         done
         
-        # 最终报告
-        echo ""
-        echo "========================================="
-        echo "FINAL SUMMARY"
-        echo "========================================="
-        echo "Processed files:"
+        # 显示结果
+        echo "===== Results ====="
         ls -la patched_files/
-        
         if [ -f "patched_files/${SN}_license.txt" ]; then
-          echo ""
-          echo "License Key saved in: ${SN}_license.txt"
-          echo "License Key content:"
+          echo "License Key:"
           cat "patched_files/${SN}_license.txt"
-        else
-          echo ""
-          echo "WARNING: No license key was extracted!"
-          echo "Please check the activator output above for errors."
         fi
     
-    - name: Verify files before upload
-      run: |
-        SN="${{ github.event.inputs.serial_number }}"
-        
-        # 确保至少有一些内容
-        if [ ! -f "patched_files/${SN}_license.txt" ]; then
-          echo "Creating placeholder license file..."
-          echo "No license extracted - check manual patch output" > "patched_files/${SN}_license.txt"
-        fi
-        
-        # 列出所有文件及大小
-        echo "Files to upload:"
-        for f in patched_files/*; do
-          if [ -f "$f" ]; then
-            size=$(stat -c%s "$f" 2>/dev/null || wc -c < "$f")
-            echo "  $(basename "$f") - Size: $size bytes"
-          fi
-        done
-    
-    - name: Upload patched files
+    - name: Upload files
       uses: actions/upload-artifact@v4
       with:
-        name: patched-virtualhere-${{ github.event.inputs.serial_number }}
+        name: patched-${{ github.event.inputs.serial_number }}
         path: patched_files/*
-        retention-days: 30
     
     - name: Create Release
-      if: success()
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: patch-${{ github.event.inputs.serial_number }}-${{ github.run_number }}
-        name: VirtualHere Patched - ${{ github.event.inputs.serial_number }}
-        body: |
-          ## VirtualHere USB Server - Patched
-          
-          **Serial Number:** `${{ github.event.inputs.serial_number }}`  
-          **Device Count:** `${{ github.event.inputs.device_count }}`
-          
-          ### 📦 Files
-          - Patched IPK files: `${{ github.event.inputs.serial_number }}*.ipk`
-          - License key: `${{ github.event.inputs.serial_number }}_license.txt`
-          - Instructions: `README_${{ github.event.inputs.serial_number }}.txt`
-          
-          ### 🔧 Installation
-          1. Download and install the patched IPK file
-          2. Check the license.txt file for your key
-          3. Enter the key in VirtualHere Client: USB Servers → License → Enter Key
-          
-          ### ⚠️ Notes
-          - The license key format: `serialnumber,devices,activation_code`
-          - If devices require authorization, reduce the device count
+        tag_name: v${{ github.event.inputs.serial_number }}-${{ github.run_number }}
+        name: Patched - ${{ github.event.inputs.serial_number }}
         files: patched_files/*
         fail_on_unmatched_files: false
-        draft: false
-        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
