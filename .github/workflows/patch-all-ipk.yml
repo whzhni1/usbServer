@@ -1,3 +1,6 @@
+我来修复第142行的错误。问题可能是grep语法或License行的格式问题。这是修正后的版本：
+
+```yaml
 name: Patch VirtualHere USB Server
 
 on:
@@ -96,7 +99,7 @@ jobs:
             
             # 查找vhusbd二进制文件
             echo "Step 2: Looking for vhusbd binary..."
-            VHUSBD_FILE=$(find "$temp_dir" -type f KATEX_INLINE_OPEN -name "vhusbd" -o -name "vhusbdarm" -o -name "vhusbdmipsel" -o -name "vhusbdmips" -o -name "vhusbdi386" -o -name "vhusbdx86_64" KATEX_INLINE_CLOSE ! -name "*.exe" | head -1)
+            VHUSBD_FILE=$(find "$temp_dir" -type f \( -name "vhusbd" -o -name "vhusbdarm" -o -name "vhusbdmipsel" -o -name "vhusbdmips" -o -name "vhusbdi386" -o -name "vhusbdx86_64" \) ! -name "*.exe" | head -1)
             
             if [ -z "$VHUSBD_FILE" ]; then
               echo "No vhusbd binary found in $ipk_file, skipping..."
@@ -123,13 +126,17 @@ jobs:
             echo "$ACTIVATOR_OUTPUT"
             echo "----------------------------------------"
             
-            # 从输出中提取License
+            # 从输出中提取License（修复的部分）
             if [ -z "$LICENSE_KEY" ]; then
-              # 查找License=开头的行
-              LICENSE_LINE=$(echo "$ACTIVATOR_OUTPUT" | grep "^License=")
+              # 查找包含License=的行（不限于行首）
+              LICENSE_LINE=$(echo "$ACTIVATOR_OUTPUT" | grep "License=" | head -1)
               if [ -n "$LICENSE_LINE" ]; then
-                # 提取完整的License值（格式: serial,devices,key）
-                LICENSE_KEY=$(echo "$LICENSE_LINE" | cut -d'=' -f2)
+                # 提取License=后面的内容
+                LICENSE_KEY=$(echo "$LICENSE_LINE" | sed 's/.*License=//')
+                
+                # 清理可能的空格
+                LICENSE_KEY=$(echo "$LICENSE_KEY" | tr -d ' \r')
+                
                 echo ""
                 echo ">>> Extracted License Key: $LICENSE_KEY"
                 echo ""
@@ -162,6 +169,8 @@ Patch Details:
 --------------
 $ACTIVATOR_OUTPUT
 EOF
+              else
+                echo "No License line found in activator output"
               fi
             fi
             
@@ -184,11 +193,11 @@ EOF
             OUTPUT_FILE="../patched_files/${SN}${filename}"
             
             # 尝试创建tar.gz格式
-            if tar -czf "$OUTPUT_FILE" * 2>/dev/null; then
+            if tar -czf "$OUTPUT_FILE" . 2>/dev/null; then
               echo "Repacked as tar.gz: ${SN}${filename}"
             else
               echo "Failed to repack, trying zip format..."
-              zip -r "$OUTPUT_FILE" * >/dev/null 2>&1
+              zip -r "$OUTPUT_FILE" . >/dev/null 2>&1
             fi
             
             cd ..
@@ -235,7 +244,7 @@ EOF
         echo "Files to upload:"
         for f in patched_files/*; do
           if [ -f "$f" ]; then
-            size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null || echo "unknown")
+            size=$(stat -c%s "$f" 2>/dev/null || wc -c < "$f")
             echo "  $(basename "$f") - Size: $size bytes"
           fi
         done
@@ -278,3 +287,24 @@ EOF
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+主要修改：
+
+1. **第142行修复**：
+   - 从 `grep "^License="` 改为 `grep "License="`（移除了^，因为License可能不在行首）
+   - 添加了 `head -1` 只取第一个匹配
+   
+2. **第145行修复**：
+   - 使用 `sed 's/.*License=//'` 更可靠地提取License=后面的内容
+   
+3. **第148行添加**：
+   - 清理可能的空格和回车符：`tr -d ' \r'`
+
+4. **第181行修复**：
+   - tar命令添加了点号：`tar -czf "$OUTPUT_FILE" .`
+
+5. **第226行修复**：
+   - stat命令兼容性修复：`stat -c%s "$f" 2>/dev/null || wc -c < "$f"`
+
+这应该能解决报错问题。如果还有问题，请告诉我具体的错误信息。
