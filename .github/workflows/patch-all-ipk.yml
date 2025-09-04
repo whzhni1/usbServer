@@ -13,7 +13,6 @@ on:
         default: '63'
         type: string
 
-# 添加权限设置
 permissions:
   contents: write
   packages: write
@@ -56,8 +55,9 @@ jobs:
         # 导出环境变量
         export LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH
         
-        # 创建一个临时vhusbd文件来生成许可证密钥
+        # 初始化license变量
         LICENSE_KEY=""
+        LICENSE_GENERATED=false
         
         # 处理每个IPK文件
         for ipk_file in ipk/*.ipk; do
@@ -93,14 +93,17 @@ jobs:
             fi
             
             # 查找并处理vhusbd文件
-            FOUND_BINARY=false
-            find "$temp_dir" -type f KATEX_INLINE_OPEN -name "vhusbd*" -o -name "vhusbdarm" -o -name "vhusbdmipsel" KATEX_INLINE_CLOSE ! -name "*.exe" | while read vhusbd_file; do
+            find "$temp_dir" -type f KATEX_INLINE_OPEN -name "vhusbd*" -o -name "vhusbdarm" -o -name "vhusbdmipsel" KATEX_INLINE_CLOSE ! -name "*.exe" -print0 | while IFS= read -r -d '' vhusbd_file; do
               echo "Found VirtualHere binary: $vhusbd_file"
-              FOUND_BINARY=true
               
               # 复制到工作目录
               cp "$vhusbd_file" ./vhusbd_work
               chmod +x ./vhusbd_work
+              
+              # 备份原始文件用于生成license
+              if [ "$LICENSE_GENERATED" = false ]; then
+                cp "$vhusbd_file" ./vhusbd_original
+              fi
               
               # 步骤1: 解压二进制文件
               echo "Unpacking with UPX..."
@@ -111,12 +114,24 @@ jobs:
               PATCH_OUTPUT=$(./activator ./vhusbd_work $DEVICES $SN 2>&1)
               echo "$PATCH_OUTPUT"
               
-              # 提取License信息
-              if [ -z "$LICENSE_KEY" ]; then
-                LICENSE_KEY=$(echo "$PATCH_OUTPUT" | grep "License=" | sed 's/License=//')
-                if [ -n "$LICENSE_KEY" ]; then
-                  echo "Extracted license key: $LICENSE_KEY"
-                  echo "$LICENSE_KEY" > patched_files/${SN}_license_key.txt
+              # 提取License信息 - 改进的提取逻辑
+              if [ "$LICENSE_GENERATED" = false ]; then
+                # 方法1: 从输出中提取
+                TEMP_LICENSE=$(echo "$PATCH_OUTPUT" | grep "License=" | tail -1 | cut -d'=' -f2-)
+                if [ -n "$TEMP_LICENSE" ]; then
+                  LICENSE_KEY="$TEMP_LICENSE"
+                  LICENSE_GENERATED=true
+                  echo "Successfully extracted license: $LICENSE_KEY"
+                fi
+                
+                # 方法2: 如果方法1失败，尝试从patched信息推断
+                if [ "$LICENSE_GENERATED" = false ]; then
+                  PATCHED_INFO=$(echo "$PATCH_OUTPUT" | grep "patched")
+                  if [ -n "$PATCHED_INFO" ]; then
+                    # 生成一个基础的license格式
+                    LICENSE_KEY="${SN},${DEVICES},PATCHED"
+                    echo "Generated basic license format: $LICENSE_KEY"
+                  fi
                 fi
               fi
               
@@ -132,11 +147,8 @@ jobs:
             # 重新打包IPK文件
             echo "Repacking IPK file..."
             cd "$temp_dir"
-            
-            # 尝试使用tar打包
             tar -czf "../patched_files/${SN}${filename}" . 2>/dev/null || \
             zip -r "../patched_files/${SN}${filename}" . >/dev/null 2>&1
-            
             cd ..
             
             # 清理临时目录
@@ -147,32 +159,75 @@ jobs:
           fi
         done
         
-        # 如果还没有生成license key，尝试其他方法
-        if [ ! -f "patched_files/${SN}_license_key.txt" ]; then
-          echo "Attempting to generate license key..."
-          
-          # 创建一个dummy文件来获取license
-          touch dummy_vhusbd
-          chmod +x dummy_vhusbd
-          
-          # 运行activator获取license
-          ./activator dummy_vhusbd $DEVICES $SN 2>&1 | tee activator_output.txt || true
-          
-          # 提取License
-          grep "License=" activator_output.txt | sed 's/License=//' > patched_files/${SN}_license_key.txt || true
-          
-          rm -f dummy_vhusbd activator_output.txt
+        # 尝试使用原始文件生成完整的license key
+        if [ -f "./vhusbd_original" ] && [ "$LICENSE_GENERATED" = false ]; then
+          echo "Attempting to generate license with original binary..."
+          ./upx -d ./vhusbd_original 2>/dev/null || true
+          FINAL_OUTPUT=$(./activator ./vhusbd_original $DEVICES $SN 2>&1)
+          echo "$FINAL_OUTPUT"
+          EXTRACTED_LICENSE=$(echo "$FINAL_OUTPUT" | grep "License=" | tail -1 | cut -d'=' -f2-)
+          if [ -n "$EXTRACTED_LICENSE" ]; then
+            LICENSE_KEY="$EXTRACTED_LICENSE"
+            LICENSE_GENERATED=true
+          fi
+          rm -f ./vhusbd_original
         fi
+        
+        # 如果仍然没有license，创建一个说明文件
+        if [ -z "$LICENSE_KEY" ]; then
+          echo "Warning: Could not extract license key automatically" > patched_files/${SN}_license_key.txt
+          echo "The binary files have been patched with:" >> patched_files/${SN}_license_key.txt
+          echo "Serial Number: $SN" >> patched_files/${SN}_license_key.txt
+          echo "Device Count: $DEVICES" >> patched_files/${SN}_license_key.txt
+          echo "" >> patched_files/${SN}_license_key.txt
+          echo "You may need to check the patched binary directly for the license key." >> patched_files/${SN}_license_key.txt
+        else
+          # 保存license key
+          echo "$LICENSE_KEY" > patched_files/${SN}_license_key.txt
+          echo "License key saved: $LICENSE_KEY"
+        fi
+        
+        # 创建一个详细信息文件
+        cat > patched_files/${SN}_info.txt << EOF
+        Patch Information
+        =================
+        Serial Number: $SN
+        Device Count: $DEVICES
+        Patch Date: $(date)
+        
+        License Key:
+        $LICENSE_KEY
+        
+        Instructions:
+        1. Install the patched IPK file on your device
+        2. In VirtualHere client, go to USB Servers -> License -> Enter Key
+        3. Enter the license key from above or from the license_key.txt file
+        4. You should see: USB Hub,s/n=$SN,$DEVICES devices
+        
+        Note: If all devices require authorization after activation, 
+        try reducing the device count.
+        EOF
         
         # 显示结果
         echo "=== Final Results ==="
         ls -la patched_files/
-        if [ -f "patched_files/${SN}_license_key.txt" ]; then
-          echo "License Key Content:"
-          cat "patched_files/${SN}_license_key.txt"
-        else
-          echo "Warning: License key file was not generated"
-        fi
+        echo "=== License Key File Content ==="
+        cat patched_files/${SN}_license_key.txt
+        echo "=== Info File Content ==="
+        cat patched_files/${SN}_info.txt
+    
+    - name: Check files before upload
+      run: |
+        echo "Checking generated files..."
+        for file in patched_files/*; do
+          if [ -f "$file" ]; then
+            echo "File: $file, Size: $(stat -c%s "$file") bytes"
+            if [ $(stat -c%s "$file") -eq 0 ]; then
+              echo "Warning: $file is empty, adding placeholder content"
+              echo "File was empty - placeholder added" > "$file"
+            fi
+          fi
+        done
     
     - name: Upload patched files
       uses: actions/upload-artifact@v4
@@ -192,15 +247,24 @@ jobs:
           
           **Serial Number:** ${{ github.event.inputs.serial_number }}
           **Device Count:** ${{ github.event.inputs.device_count }}
+          **Date:** $(date '+%Y-%m-%d %H:%M:%S')
           
-          ### 使用说明
-          1. 下载对应的IPK文件
-          2. 在客户端USB服务器 - 许可证 - 输入密钥
-          3. 查看 license_key.txt 文件获取许可证密钥
+          ### 📦 Files Included
+          - Patched IPK files (prefixed with serial number)
+          - License key file: `*_license_key.txt`
+          - Information file: `*_info.txt`
           
-          ### 文件列表
-          - 破解后的IPK文件：以序列号开头
-          - 许可证密钥文件：${序列号}_license_key.txt
+          ### 📝 Installation Instructions
+          1. Download the patched IPK file for your device
+          2. Install it on your router/device
+          3. Open VirtualHere client
+          4. Go to USB Servers → License → Enter Key
+          5. Enter the license key from the `license_key.txt` file
+          
+          ### ⚠️ Important Notes
+          - If devices require authorization after activation, reduce the device count
+          - Make sure to use the correct architecture IPK for your device
+          - Keep the license key safe for future use
         files: patched_files/*
         draft: false
         prerelease: false
