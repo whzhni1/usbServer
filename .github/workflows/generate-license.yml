@@ -1,0 +1,111 @@
+name: Generate License Key Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      serial_number:
+        description: 'Serial Number'
+        required: true
+        type: string
+      device_count:
+        description: 'Device Count (1-64)'
+        required: false
+        default: '63'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Generate License
+      run: |
+        # 解压工具
+        unzip activator_linux.zip
+        chmod +x activator upx
+        export LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH
+        
+        SN="${{ github.event.inputs.serial_number }}"
+        DEVICES="${{ github.event.inputs.device_count }}"
+        
+        # 找一个vhusbd文件来生成license
+        echo "Searching for vhusbd binary..."
+        
+        # 从IPK中提取
+        for ipk in ipk/*.ipk; do
+          if [ -f "$ipk" ]; then
+            echo "Extracting from $ipk..."
+            mkdir -p temp_extract
+            tar -xzf "$ipk" -C temp_extract 2>/dev/null || \
+            ar x "$ipk" 2>/dev/null || true
+            
+            if [ -f "data.tar.gz" ]; then
+              tar -xzf data.tar.gz -C temp_extract
+              rm -f *.tar.gz debian-binary
+            fi
+            
+            # 找到vhusbd
+            VHUSBD=$(find temp_extract -name "vhusbd*" -type f | head -1)
+            if [ -n "$VHUSBD" ]; then
+              echo "Found: $VHUSBD"
+              cp "$VHUSBD" ./vhusbd_temp
+              chmod +x ./vhusbd_temp
+              
+              # 解压
+              ./upx -d ./vhusbd_temp 2>/dev/null || true
+              
+              # 生成license
+              echo "Generating license..."
+              OUTPUT=$(./activator ./vhusbd_temp $DEVICES $SN 2>&1)
+              echo "$OUTPUT"
+              
+              # 提取license
+              LICENSE=$(echo "$OUTPUT" | grep "License=" | tail -1)
+              if [ -n "$LICENSE" ]; then
+                echo "================================"
+                echo "LICENSE KEY GENERATED:"
+                echo "$LICENSE"
+                echo "================================"
+                
+                # 保存到文件
+                mkdir -p output
+                echo "$LICENSE" | cut -d'=' -f2- > output/license_key.txt
+                
+                # 创建完整信息
+                cat > output/full_info.txt << EOF
+        Serial Number: $SN
+        Device Count: $DEVICES
+        $LICENSE
+        
+        Usage: Enter the key after 'License=' in VirtualHere client
+        EOF
+                
+                break
+              fi
+            fi
+            
+            rm -rf temp_extract
+          fi
+        done
+        
+        # 显示结果
+        if [ -f "output/license_key.txt" ]; then
+          echo "License key:"
+          cat output/license_key.txt
+        else
+          echo "Failed to generate license key"
+          mkdir -p output
+          echo "Manual configuration needed for SN: $SN, Devices: $DEVICES" > output/license_key.txt
+        fi
+    
+    - name: Upload License
+      uses: actions/upload-artifact@v4
+      with:
+        name: license-${{ github.event.inputs.serial_number }}
+        path: output/*
