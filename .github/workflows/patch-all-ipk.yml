@@ -25,9 +25,7 @@ jobs:
 
       - name: 📦 Unpack Tools
         run: |
-          # 解压你上传的 activator_linux.zip
           unzip activator_linux.zip -d tools/
-          # 确保工具具有可执行权限
           chmod +x tools/upx tools/activator
 
       - name: 📋 List Available IPK Files
@@ -39,31 +37,25 @@ jobs:
         run: |
           # 遍历 ipk/ 目录下的所有 .ipk 文件
           for ORIGINAL_IPK in ipk/*.ipk; do
-            # 获取不带路径的文件名
             BASE_IPK_NAME=$(basename "$ORIGINAL_IPK")
-            # 新 IPK 的名称格式：{SN}{original_ipk_name}
             NEW_IPK="${{ inputs.serial_number }}${BASE_IPK_NAME}"
             
             echo "----------------------------------------------------------"
             echo "🔧 Processing: $BASE_IPK_NAME -> $NEW_IPK"
             echo "----------------------------------------------------------"
 
-            # 1. 创建临时工作目录
             WORK_DIR=$(mktemp -d)
             cd "$WORK_DIR"
             
-            # 2. 复制原始 IPK 到临时目录
-            cp "../../$ORIGINAL_IPK" ./
+            # 修正：使用 GITHUB_WORKSPACE 获取绝对路径
+            cp "$GITHUB_WORKSPACE/$ORIGINAL_IPK" ./
 
-            # 3. 解压原始 IPK
             mkdir extracted_ipk
             tar -xzf "$BASE_IPK_NAME" -C extracted_ipk/
 
-            # 4. 解压 data.tar.gz
             cd extracted_ipk
             tar -xzf data.tar.gz
 
-            # 5. 找到 vhusbd 二进制文件
             VHUSBD_PATH=$(find . -name "vhusbd*" -type f -executable | head -n 1)
             if [ -z "$VHUSBD_PATH" ]; then
               echo "❌ Error: Could not find vhusbd binary in $BASE_IPK_NAME"
@@ -71,31 +63,26 @@ jobs:
             fi
             echo "Found vhusbd at: $VHUSBD_PATH"
 
-            # 6. 尝试用 UPX 解压二进制文件
-            cd ../..
+            # 修正：回到仓库根目录使用工具
+            cd "$GITHUB_WORKSPACE"
             ./tools/upx -d "$WORK_DIR/extracted_ipk/$VHUSBD_PATH" || echo "Binary not packed with UPX, continuing..."
 
-            # 7. 使用 activator 破解二进制文件
             echo "Patching binary with SN: ${{ inputs.serial_number }}"
             ./tools/activator "$WORK_DIR/extracted_ipk/$VHUSBD_PATH" ${{ inputs.device_count }} ${{ inputs.serial_number }}
 
-            # 8. (可选) 重新用 UPX 压缩
             ./tools/upx -9 "$WORK_DIR/extracted_ipk/$VHUSBD_PATH" || echo "UPX re-compression failed or skipped, continuing..."
 
-            # 9. 重新打包 data.tar.gz
             cd "$WORK_DIR/extracted_ipk"
             tar -czf ../new_data.tar.gz ./*
 
-            # 10. 替换旧的 data.tar.gz
             cd ..
             cp new_data.tar.gz extracted_ipk/data.tar.gz
 
-            # 11. 重新打包整个 IPK
             cd extracted_ipk
-            tar -czf "../../$NEW_IPK" ./*
+            # 修正：使用绝对路径输出文件
+            tar -czf "$GITHUB_WORKSPACE/$NEW_IPK" ./*
 
-            # 12. 清理临时工作目录
-            cd ../..
+            cd "$GITHUB_WORKSPACE"
             rm -rf "$WORK_DIR"
             
             echo "✅ Successfully created: $NEW_IPK"
@@ -108,7 +95,6 @@ jobs:
         with:
           name: patched-ipks-${{ inputs.serial_number }}
           path: ${{ inputs.serial_number }}*.ipk
-          # 上传所有以 SN 开头的 IPK 文件
 
       - name: ✅ Completion Message
         run: |
