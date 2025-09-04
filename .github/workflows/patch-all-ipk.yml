@@ -10,7 +10,7 @@ on:
       device_count:
         description: 'Number of devices (1-64)'
         required: false
-        default: '63'
+        default: '64'
         type: string
 
 jobs:
@@ -107,7 +107,7 @@ jobs:
         fi
     
     - name: Upload patched files
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: patched-virtualhere-${{ github.event.inputs.serial_number }}
         path: patched_files/*
