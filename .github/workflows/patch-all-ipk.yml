@@ -1,108 +1,141 @@
-name: 🛠️ Build Patched VirtualHere IPKs (All Architectures)
+name: Patch VirtualHere USB Server
 
 on:
   workflow_dispatch:
     inputs:
       serial_number:
-        description: 'Serial Number (SN) from your VirtualHere client'
+        description: 'Serial Number (e.g., 123456789abcdef)'
         required: true
         type: string
-        placeholder: 'Paste the s/n= value from your client here'
       device_count:
-        description: 'Number of devices to activate (1-64)'
-        required: true
-        type: number
-        default: 63
-        min: 1
-        max: 64
+        description: 'Number of devices (1-64)'
+        required: false
+        default: '63'
+        type: string
 
 jobs:
-  build:
+  patch-and-upload:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: 🛎️ Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: 📦 Unpack Tools
-        run: |
-          unzip activator_linux.zip -d tools/
-          chmod +x tools/upx tools/activator
-
-      - name: 📋 List Available IPK Files
-        run: |
-          echo "Found the following IPK files to patch:"
-          ls -la ipk/*.ipk || echo "No IPK files found in ipk/ directory"
-
-      - name: 🔨 Process All IPK Files
-        run: |
-          # 遍历 ipk/ 目录下的所有 .ipk 文件
-          for ORIGINAL_IPK in ipk/*.ipk; do
-            BASE_IPK_NAME=$(basename "$ORIGINAL_IPK")
-            NEW_IPK="${{ inputs.serial_number }}${BASE_IPK_NAME}"
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Setup environment
+      run: |
+        # 解压工具包
+        unzip activator_linux.zip
+        chmod +x activator
+        chmod +x upx
+        
+        # 设置库路径
+        export LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH
+        
+        # 创建输出目录
+        mkdir -p patched_files
+    
+    - name: Process IPK files
+      run: |
+        # 设置变量
+        SN="${{ github.event.inputs.serial_number }}"
+        DEVICES="${{ github.event.inputs.device_count }}"
+        
+        echo "Processing with Serial Number: $SN"
+        echo "Device Count: $DEVICES"
+        
+        # 处理每个IPK文件
+        for ipk_file in ipk/*.ipk; do
+          if [ -f "$ipk_file" ]; then
+            echo "Processing: $ipk_file"
             
-            echo "----------------------------------------------------------"
-            echo "🔧 Processing: $BASE_IPK_NAME -> $NEW_IPK"
-            echo "----------------------------------------------------------"
-
-            WORK_DIR=$(mktemp -d)
-            cd "$WORK_DIR"
+            # 获取文件名（不含路径）
+            filename=$(basename "$ipk_file")
+            base_name="${filename%.*}"
             
-            # 修正：使用 GITHUB_WORKSPACE 获取绝对路径
-            cp "$GITHUB_WORKSPACE/$ORIGINAL_IPK" ./
-
-            mkdir extracted_ipk
-            tar -xzf "$BASE_IPK_NAME" -C extracted_ipk/
-
-            cd extracted_ipk
-            tar -xzf data.tar.gz
-
-            VHUSBD_PATH=$(find . -name "vhusbd*" -type f -executable | head -n 1)
-            if [ -z "$VHUSBD_PATH" ]; then
-              echo "❌ Error: Could not find vhusbd binary in $BASE_IPK_NAME"
-              continue
-            fi
-            echo "Found vhusbd at: $VHUSBD_PATH"
-
-            # 修正：回到仓库根目录使用工具
-            cd "$GITHUB_WORKSPACE"
-            ./tools/upx -d "$WORK_DIR/extracted_ipk/$VHUSBD_PATH" || echo "Binary not packed with UPX, continuing..."
-
-            echo "Patching binary with SN: ${{ inputs.serial_number }}"
-            ./tools/activator "$WORK_DIR/extracted_ipk/$VHUSBD_PATH" ${{ inputs.device_count }} ${{ inputs.serial_number }}
-
-            ./tools/upx -9 "$WORK_DIR/extracted_ipk/$VHUSBD_PATH" || echo "UPX re-compression failed or skipped, continuing..."
-
-            cd "$WORK_DIR/extracted_ipk"
-            tar -czf ../new_data.tar.gz ./*
-
+            # 创建临时目录
+            temp_dir="temp_$base_name"
+            mkdir -p "$temp_dir"
+            
+            # 解压IPK文件
+            tar -xzf "$ipk_file" -C "$temp_dir" 2>/dev/null || \
+            ar -x "$ipk_file" -C "$temp_dir" 2>/dev/null || \
+            unzip -q "$ipk_file" -d "$temp_dir" 2>/dev/null || true
+            
+            # 查找并处理vhusbd文件
+            find "$temp_dir" -type f -name "vhusbd*" ! -name "*.exe" | while read vhusbd_file; do
+              echo "Found VirtualHere binary: $vhusbd_file"
+              
+              # 复制到工作目录
+              cp "$vhusbd_file" ./vhusbd_work
+              chmod +x ./vhusbd_work
+              
+              # 步骤1: 解压二进制文件
+              ./upx -d ./vhusbd_work 2>/dev/null || echo "File may not be packed with UPX"
+              
+              # 步骤3: 使用activator打补丁
+              echo "Patching with activator..."
+              ./activator ./vhusbd_work $DEVICES $SN
+              
+              # 步骤4: 重新压缩
+              ./upx -9 ./vhusbd_work 2>/dev/null || echo "Compression skipped"
+              
+              # 复制回原位置
+              cp ./vhusbd_work "$vhusbd_file"
+              rm ./vhusbd_work
+            done
+            
+            # 重新打包IPK文件
+            cd "$temp_dir"
+            tar -czf "../patched_files/${SN}${filename}" * 2>/dev/null || \
+            zip -r "../patched_files/${SN}${filename}" * 2>/dev/null
             cd ..
-            cp new_data.tar.gz extracted_ipk/data.tar.gz
-
-            cd extracted_ipk
-            # 修正：使用绝对路径输出文件
-            tar -czf "$GITHUB_WORKSPACE/$NEW_IPK" ./*
-
-            cd "$GITHUB_WORKSPACE"
-            rm -rf "$WORK_DIR"
             
-            echo "✅ Successfully created: $NEW_IPK"
-            echo ""
-
-          done
-
-      - name: 📤 Upload All Patched IPKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: patched-ipks-${{ inputs.serial_number }}
-          path: ${{ inputs.serial_number }}*.ipk
-
-      - name: ✅ Completion Message
-        run: |
-          echo "=========================================================="
-          echo "✅ Build successful! All IPK files have been processed."
-          echo "📦 Generated files:"
-          ls -la ${{ inputs.serial_number }}*.ipk || echo "No files found"
-          echo ""
-          echo "🔑 Please use the following license key in your client:"
-          echo "   ${{ inputs.serial_number }},${{ inputs.device_count }},XXXXXXXXXXXX"
-          echo "=========================================================="
+            # 清理临时目录
+            rm -rf "$temp_dir"
+            
+            echo "Created: patched_files/${SN}${filename}"
+          fi
+        done
+        
+        # 生成许可证密钥文件
+        echo "Generating license key file..."
+        ./activator dummy $DEVICES $SN 2>&1 | grep "License=" | cut -d'=' -f2- > patched_files/${SN}_license_key.txt
+        
+        if [ -s patched_files/${SN}_license_key.txt ]; then
+          echo "License key saved to: ${SN}_license_key.txt"
+          echo "License: $(cat patched_files/${SN}_license_key.txt)"
+        fi
+    
+    - name: Upload patched files
+      uses: actions/upload-artifact@v3
+      with:
+        name: patched-virtualhere-${{ github.event.inputs.serial_number }}
+        path: patched_files/*
+    
+    - name: Create Release
+      if: success()
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: patch-${{ github.event.inputs.serial_number }}-${{ github.run_number }}
+        release_name: Patched VirtualHere - SN ${{ github.event.inputs.serial_number }}
+        body: |
+          ## Patched VirtualHere USB Server
+          
+          **Serial Number:** ${{ github.event.inputs.serial_number }}
+          **Device Count:** ${{ github.event.inputs.device_count }}
+          
+          ### 使用说明
+          1. 下载对应的IPK文件
+          2. 在客户端USB服务器 - 许可证 - 输入密钥
+          3. 查看 license_key.txt 文件获取许可证密钥
+        draft: false
+        prerelease: false
+    
+    - name: Upload Release Assets
+      if: success()
+      run: |
+        # 这里可以添加上传到Release的逻辑
+        echo "Files ready for release"
+        ls -la patched_files/
