@@ -1,6 +1,4 @@
-我来修复第142行的错误。问题可能是grep语法或License行的格式问题。这是修正后的版本：
 
-```yaml
 name: Patch VirtualHere USB Server
 
 on:
@@ -287,24 +285,3 @@ EOF
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-主要修改：
-
-1. **第142行修复**：
-   - 从 `grep "^License="` 改为 `grep "License="`（移除了^，因为License可能不在行首）
-   - 添加了 `head -1` 只取第一个匹配
-   
-2. **第145行修复**：
-   - 使用 `sed 's/.*License=//'` 更可靠地提取License=后面的内容
-   
-3. **第148行添加**：
-   - 清理可能的空格和回车符：`tr -d ' \r'`
-
-4. **第181行修复**：
-   - tar命令添加了点号：`tar -czf "$OUTPUT_FILE" .`
-
-5. **第226行修复**：
-   - stat命令兼容性修复：`stat -c%s "$f" 2>/dev/null || wc -c < "$f"`
-
-这应该能解决报错问题。如果还有问题，请告诉我具体的错误信息。
