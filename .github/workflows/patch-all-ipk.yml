@@ -36,11 +36,9 @@ jobs:
 
       - name: 🔨 Process All IPK Files
         run: |
-          # 设置库路径，让 activator 能找到 libcrypto.so.1.1
           export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/tools:$LD_LIBRARY_PATH
           echo "LD_LIBRARY_PATH set to: $LD_LIBRARY_PATH"
           
-          # 遍历 ipk/ 目录下的所有 .ipk 文件
           for ORIGINAL_IPK in ipk/*.ipk; do
             BASE_IPK_NAME=$(basename "$ORIGINAL_IPK")
             NEW_IPK="${{ inputs.serial_number }}${BASE_IPK_NAME}"
@@ -52,19 +50,14 @@ jobs:
             WORK_DIR=$(mktemp -d)
             cd "$WORK_DIR"
             
-            # 复制原始 IPK 到临时目录
             cp "$GITHUB_WORKSPACE/$ORIGINAL_IPK" ./
 
-            # 解压原始 IPK
             mkdir extracted_ipk
             tar -xzf "$BASE_IPK_NAME" -C extracted_ipk/
 
-            # 解压 data.tar.gz
             cd extracted_ipk
             tar -xzf data.tar.gz
 
-            # 查找所有 vhusbd 文件（包括没有执行权限的）
-            echo "Searching for all vhusbd files..."
             VHUSBD_FILES=$(find . -name "vhusbd" -type f)
             
             if [ -z "$VHUSBD_FILES" ]; then
@@ -74,16 +67,12 @@ jobs:
               continue
             fi
             
-            # 显示找到的所有文件
             echo "Found vhusbd files:"
             echo "$VHUSBD_FILES"
             
-            # 标记是否成功处理了至少一个文件
             PATCH_SUCCESS=false
             
-            # 遍历找到的每个 vhusbd 文件并进行处理
             for VHUSBD_PATH in $VHUSBD_FILES; do
-              # 跳过脚本文件（根据路径判断）
               if [[ "$VHUSBD_PATH" == *"/etc/"* ]] || [[ "$VHUSBD_PATH" == *"/init.d/"* ]]; then
                 echo "⏭️  Skipping script file: $VHUSBD_PATH"
                 continue
@@ -94,18 +83,15 @@ jobs:
               file "$VHUSBD_PATH"
               ls -la "$VHUSBD_PATH"
               
-              # 给文件添加执行权限
               chmod +x "$VHUSBD_PATH"
               echo "Added execute permission to file"
 
-              # 回到仓库根目录使用工具
               cd "$GITHUB_WORKSPACE"
               
-              # 尝试用 UPX 解压二进制文件
-              echo "Attempting to decompress with UPX..."
+              # UPX 解压
               ./tools/upx -d "$WORK_DIR/$VHUSBD_PATH" || echo "UPX decompression failed or not needed, continuing..."
 
-              # 使用 activator 破解二进制文件
+              # 破解二进制文件
               echo "Patching binary with SN: ${{ inputs.serial_number }} and device count: ${{ inputs.device_count }}"
               ./tools/activator "$WORK_DIR/$VHUSBD_PATH" ${{ inputs.device_count }} ${{ inputs.serial_number }}
               
@@ -113,27 +99,23 @@ jobs:
                 echo "✅ Binary patched successfully"
                 PATCH_SUCCESS=true
                 
-                # 重新用 UPX 压缩
-                echo "Re-compressing with UPX..."
+                # UPX 重新压缩
                 ./tools/upx -9 "$WORK_DIR/$VHUSBD_PATH" || echo "UPX re-compression failed or skipped, continuing..."
 
-                # 重新打包 data.tar.gz
+                # 重新打包
                 cd "$WORK_DIR/extracted_ipk"
                 tar -czf ../new_data.tar.gz ./*
 
-                # 替换旧的 data.tar.gz
                 cd ..
                 cp new_data.tar.gz extracted_ipk/data.tar.gz
 
-                # 重新打包整个 IPK
                 cd extracted_ipk
                 tar -czf "$GITHUB_WORKSPACE/$NEW_IPK" ./*
 
                 echo "✅ Successfully created patched IPK: $NEW_IPK"
-                break # 处理一个成功的文件后就跳出循环
+                break
               else
                 echo "❌ Binary patching failed with error code: $?"
-                # 继续尝试下一个文件
                 cd "$WORK_DIR/extracted_ipk"
               fi
             done
@@ -142,7 +124,6 @@ jobs:
               echo "❌ Failed to patch any vhusbd binary in $BASE_IPK_NAME"
             fi
 
-            # 清理临时工作目录
             cd "$GITHUB_WORKSPACE"
             rm -rf "$WORK_DIR"
             
@@ -159,15 +140,14 @@ jobs:
       - name: ✅ Completion Message
         run: |
           echo "=========================================================="
-          echo "✅ Build completed!"
-          echo "📦 Generated files:"
-          ls -la ${{ inputs.serial_number }}*.ipk 2>/dev/null || echo "No IPK files were generated"
+          echo "✅ Build completed successfully!"
+          echo "📦 Generated patched IPK files"
           echo ""
-          echo "🔑 Please use the following license key in your VirtualHere client:"
-          echo "   ${{ inputs.serial_number }},${{ inputs.device_count }},XXXXXXXXXXXX"
+          echo "🔑 License Key for your client:"
+          echo "   ${{ inputs.serial_number }},${{ inputs.device_count }},MCACDngJMWWSrZJMfzCADSfwAg4aRfJN8P0ukEaj96XRLw=="
           echo ""
-          echo "📖 Installation:"
-          echo "   1. Download the patched IPK file from Artifacts above"
-          echo "   2. Upload and install it on your OpenWrt device"
-          echo "   3. Enter the license key in your VirtualHere client"
+          echo "📖 Next steps:"
+          echo "   1. Download the patched IPK from Artifacts"
+          echo "   2. Install on your OpenWrt device"
+          echo "   3. Enter the license key in VirtualHere client"
           echo "=========================================================="
