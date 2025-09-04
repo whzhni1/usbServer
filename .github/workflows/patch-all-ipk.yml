@@ -96,7 +96,7 @@ jobs:
             
             # 查找vhusbd二进制文件
             echo "Step 2: Looking for vhusbd binary..."
-            VHUSBD_FILE=$(find "$temp_dir" -type f \( -name "vhusbd" -o -name "vhusbdarm" -o -name "vhusbdmipsel" -o -name "vhusbdmips" -o -name "vhusbdi386" -o -name "vhusbdx86_64" \) ! -name "*.exe" | head -1)
+            VHUSBD_FILE=$(find "$temp_dir" -type f KATEX_INLINE_OPEN -name "vhusbd" -o -name "vhusbdarm" -o -name "vhusbdmipsel" -o -name "vhusbdmips" -o -name "vhusbdi386" -o -name "vhusbdx86_64" KATEX_INLINE_CLOSE ! -name "*.exe" | head -1)
             
             if [ -z "$VHUSBD_FILE" ]; then
               echo "No vhusbd binary found in $ipk_file, skipping..."
@@ -123,9 +123,9 @@ jobs:
             echo "$ACTIVATOR_OUTPUT"
             echo "----------------------------------------"
             
-            # 从输出中提取License（修复的部分）
+            # 从输出中提取License
             if [ -z "$LICENSE_KEY" ]; then
-              # 查找包含License=的行（不限于行首）
+              # 查找包含License=的行
               LICENSE_LINE=$(echo "$ACTIVATOR_OUTPUT" | grep "License=" | head -1)
               if [ -n "$LICENSE_LINE" ]; then
                 # 提取License=后面的内容
@@ -142,30 +142,30 @@ jobs:
                 echo "$LICENSE_KEY" > "patched_files/${SN}_license.txt"
                 
                 # 创建详细说明文件
-                cat > "patched_files/README_${SN}.txt" << EOF
-VirtualHere USB Server - Patched Version
-=========================================
-
-Serial Number: $SN
-Device Count: $DEVICES
-License Key: $LICENSE_KEY
-
-Installation Instructions:
---------------------------
-1. Install the patched IPK file (${SN}${filename}) on your device
-2. Start the VirtualHere USB server
-3. In VirtualHere Client:
-   - Go to USB Servers -> License -> Enter Key
-   - Enter this key: $LICENSE_KEY
-4. You should see: USB Hub,s/n=$SN,$DEVICES devices
-
-Note: If devices require authorization after activation, 
-      try reducing the device count.
-
-Patch Details:
---------------
-$ACTIVATOR_OUTPUT
-EOF
+                {
+                  echo "VirtualHere USB Server - Patched Version"
+                  echo "========================================="
+                  echo ""
+                  echo "Serial Number: $SN"
+                  echo "Device Count: $DEVICES"
+                  echo "License Key: $LICENSE_KEY"
+                  echo ""
+                  echo "Installation Instructions:"
+                  echo "--------------------------"
+                  echo "1. Install the patched IPK file (${SN}${filename}) on your device"
+                  echo "2. Start the VirtualHere USB server"
+                  echo "3. In VirtualHere Client:"
+                  echo "   - Go to USB Servers -> License -> Enter Key"
+                  echo "   - Enter this key: $LICENSE_KEY"
+                  echo "4. You should see: USB Hub,s/n=$SN,$DEVICES devices"
+                  echo ""
+                  echo "Note: If devices require authorization after activation,"
+                  echo "      try reducing the device count."
+                  echo ""
+                  echo "Patch Details:"
+                  echo "--------------"
+                  echo "$ACTIVATOR_OUTPUT"
+                } > "patched_files/README_${SN}.txt"
               else
                 echo "No License line found in activator output"
               fi
