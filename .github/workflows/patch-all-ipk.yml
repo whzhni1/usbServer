@@ -27,6 +27,8 @@ jobs:
         run: |
           unzip activator_linux.zip -d tools/
           chmod +x tools/upx tools/activator
+          # 确保库文件也有读取权限
+          chmod +r tools/libcrypto.so.1.1
 
       - name: 📋 List Available IPK Files
         run: |
@@ -35,18 +37,22 @@ jobs:
 
       - name: 🔨 Process All IPK Files
         run: |
+          # 设置库路径，让 activator 能找到 libcrypto.so.1.1
+          export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/tools:$LD_LIBRARY_PATH
+          echo "LD_LIBRARY_PATH set to: $LD_LIBRARY_PATH"
+          
           # 遍历 ipk/ 目录下的所有 .ipk 文件
           for ORIGINAL_IPK in ipk/*.ipk; do
             BASE_IPK_NAME=$(basename "$ORIGINAL_IPK")
             NEW_IPK="${{ inputs.serial_number }}${BASE_IPK_NAME}"
-      
+            
             echo "----------------------------------------------------------"
             echo "🔧 Processing: $BASE_IPK_NAME -> $NEW_IPK"
             echo "----------------------------------------------------------"
 
             WORK_DIR=$(mktemp -d)
             cd "$WORK_DIR"
-      
+            
             # 复制原始 IPK 到临时目录
             cp "$GITHUB_WORKSPACE/$ORIGINAL_IPK" ./
 
@@ -58,37 +64,61 @@ jobs:
             cd extracted_ipk
             tar -xzf data.tar.gz
 
-            # 在整个解压后的文件系统中递归搜索 vhusbd 可执行文件
-            echo "Searching for vhusbd binary in the extracted file system..."
-            VHUSBD_PATH=$(find . -name "vhusbd*" -type f -executable | head -n 1)
-      
+            # 精确搜索：在 usr/share/virtualhere 目录中搜索真正的二进制文件
+            echo "Searching for vhusbd binary in usr/share/virtualhere/..."
+            VHUSBD_PATH=$(find . -path "*/usr/share/virtualhere/*/vhusbd*" -type f -executable | head -n 1)
+            
+            # 如果没找到，尝试其他可能的路径
+            if [ -z "$VHUSBD_PATH" ]; then
+              echo "Not found in virtualhere directory, searching in all usr bins..."
+              VHUSBD_PATH=$(find . -path "*/usr/bin/vhusbd*" -type f -executable | head -n 1)
+            fi
+            
+            if [ -z "$VHUSBD_PATH" ]; then
+              echo "Not found in usr/bin, searching in all usr directories..."
+              VHUSBD_PATH=$(find . -path "*/usr/*/vhusbd*" -type f -executable | head -n 1)
+            fi
+            
+            # 最后的手段：搜索所有地方但排除脚本目录
+            if [ -z "$VHUSBD_PATH" ]; then
+              echo "Not found in standard locations, searching everywhere (excluding scripts)..."
+              VHUSBD_PATH=$(find . -name "vhusbd*" -type f -executable -not -path "*/etc/*" -not -path "*/init.d/*" | head -n 1)
+            fi
+            
             if [ -z "$VHUSBD_PATH" ]; then
               echo "❌ Error: Could not find vhusbd binary in $BASE_IPK_NAME"
-              echo "Searched in all directories of the extracted IPK"
+              echo "Listing all vhusbd related files:"
+              find . -name "*vhusbd*" -type f -exec ls -la {} \; -exec file {} \;
               continue
             fi
-      
+            
             echo "✅ Found vhusbd at: $VHUSBD_PATH"
+            echo "File info:"
+            file "$VHUSBD_PATH"
+            ls -la "$VHUSBD_PATH"
 
             # 回到仓库根目录使用工具
             cd "$GITHUB_WORKSPACE"
-      
+            
             # 尝试用 UPX 解压二进制文件
-            ./tools/upx -d "$WORK_DIR/$VHUSBD_PATH" || echo "Binary not packed with UPX, continuing..."
+            echo "Attempting to decompress with UPX..."
+            ./tools/upx -d "$WORK_DIR/$VHUSBD_PATH" || echo "UPX decompression failed or not needed, continuing..."
 
             # 使用 activator 破解二进制文件
-            echo "Patching binary with SN: ${{ inputs.serial_number }}"
+            echo "Patching binary with SN: ${{ inputs.serial_number }} and device count: ${{ inputs.device_count }}"
             ./tools/activator "$WORK_DIR/$VHUSBD_PATH" ${{ inputs.device_count }} ${{ inputs.serial_number }}
-      
-            # 检查破解是否成功
+            
             if [ $? -eq 0 ]; then
               echo "✅ Binary patched successfully"
             else
-              echo "❌ Binary patching failed"
+              echo "❌ Binary patching failed with error code: $?"
+              echo "Checking if activator can run:"
+              ./tools/activator --help || echo "Activator cannot run"
               continue
             fi
 
-            # (可选) 重新用 UPX 压缩
+            # 重新用 UPX 压缩
+            echo "Re-compressing with UPX..."
             ./tools/upx -9 "$WORK_DIR/$VHUSBD_PATH" || echo "UPX re-compression failed or skipped, continuing..."
 
             # 重新打包 data.tar.gz
@@ -106,7 +136,7 @@ jobs:
             # 清理临时工作目录
             cd "$GITHUB_WORKSPACE"
             rm -rf "$WORK_DIR"
-      
+            
             echo "✅ Successfully created patched IPK: $NEW_IPK"
             echo ""
 
@@ -121,10 +151,15 @@ jobs:
       - name: ✅ Completion Message
         run: |
           echo "=========================================================="
-          echo "✅ Build successful! All IPK files have been processed."
+          echo "✅ Build completed!"
           echo "📦 Generated files:"
-          ls -la ${{ inputs.serial_number }}*.ipk || echo "No files found"
+          ls -la ${{ inputs.serial_number }}*.ipk 2>/dev/null || echo "No IPK files were generated"
           echo ""
-          echo "🔑 Please use the following license key in your client:"
+          echo "🔑 Please use the following license key in your VirtualHere client:"
           echo "   ${{ inputs.serial_number }},${{ inputs.device_count }},XXXXXXXXXXXX"
+          echo ""
+          echo "📖 Installation:"
+          echo "   1. Download the patched IPK file from Artifacts above"
+          echo "   2. Upload and install it on your OpenWrt device"
+          echo "   3. Enter the license key in your VirtualHere client"
           echo "=========================================================="
