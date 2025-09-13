@@ -27,9 +27,34 @@ jobs:
     
     - name: Setup environment
       run: |
-        # 安装必要工具
+        # 安装必要工具和库
         sudo apt-get update
         sudo apt-get install -y upx-ucl unzip
+        
+        # 安装 OpenSSL 1.1 兼容库
+        echo "安装 OpenSSL 1.1 兼容库..."
+        # 方法1: 尝试直接安装
+        sudo apt-get install -y libssl1.1 2>/dev/null || true
+        
+        # 方法2: 如果上面失败，从Ubuntu 20.04源安装
+        if ! ldconfig -p | grep libcrypto.so.1.1; then
+          echo "从Ubuntu 20.04源安装 OpenSSL 1.1..."
+          wget -q http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb
+          sudo dpkg -i libssl1.1_1.1.1f-1ubuntu2_amd64.deb 2>/dev/null || true
+          rm -f libssl1.1_1.1.1f-1ubuntu2_amd64.deb
+        fi
+        
+        # 方法3: 如果还是不行，创建符号链接
+        if ! ldconfig -p | grep libcrypto.so.1.1; then
+          echo "创建 OpenSSL 符号链接..."
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 2>/dev/null || true
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libssl.so.3 /usr/lib/x86_64-linux-gnu/libssl.so.1.1 2>/dev/null || true
+          sudo ldconfig
+        fi
+        
+        # 显示已安装的库
+        echo "检查 OpenSSL 库："
+        ldconfig -p | grep -E "libcrypto|libssl" || true
         
         # 解压activator
         echo "解压 activator2_linux.zip..."
@@ -39,7 +64,7 @@ jobs:
         echo "解压后的文件："
         ls -la
         
-        # 给activator添加执行权限（尝试不同的可能文件名）
+        # 给activator添加执行权限
         if [ -f "activator" ]; then
           chmod +x activator
           echo "✓ activator 文件已设置执行权限"
@@ -52,10 +77,14 @@ jobs:
           find . -name "*activator*" -type f
         fi
         
+        # 检查activator的依赖
+        echo "检查 activator 依赖："
+        ldd ./activator 2>&1 || echo "无法检查依赖"
+        
         # 验证activator是否可执行
         if [ -x "./activator" ]; then
           echo "✓ activator 可执行"
-          ./activator --help 2>&1 || echo "activator 无帮助信息"
+          ./activator --help 2>&1 || echo "activator 无帮助信息（正常）"
         else
           echo "❌ activator 不可执行或不存在"
           exit 1
@@ -129,6 +158,9 @@ jobs:
         
         echo "序列号: $SN"
         echo "设备数量: $DEVICES"
+        
+        # 设置 LD_LIBRARY_PATH 以防万一
+        export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
         
         # 执行activator生成密钥
         echo "执行命令: ./activator xx $DEVICES $SN"
