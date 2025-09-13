@@ -31,62 +31,69 @@ jobs:
           unzip -o activator2_linux.zip -d tools/
           echo "文件信息:"
           file tools/*
-          echo "文件大小:"
-          ls -la tools/
           chmod +x tools/*
 
-      - name: Test Different Approaches
+      - name: Install System Crypto Library
         run: |
+          echo "安装系统版的 libcrypto..."
+          # 尝试安装兼容的 libcrypto 库
+          sudo apt-get install -y libssl-dev openssl
+          # 查找系统中的 libcrypto
+          find /usr -name "*libcrypto*" 2>/dev/null | head -10
+
+      - name: Test Library Loading
+        run: |
+          echo "测试库文件加载..."
           cd tools
           
-          echo "=== 方法1: 直接运行查看帮助 ==="
-          ./activator --help || ./activator -h || echo "无法获取帮助信息"
+          # 方法1: 使用 LD_LIBRARY_PATH 运行
+          echo "=== 方法1: 使用 LD_LIBRARY_PATH ==="
+          LD_LIBRARY_PATH=$(pwd) ./activator --help 2>&1 | tee ../output/method1.txt || echo "方法1失败"
           
-          echo "=== 方法2: 尝试不同的参数格式 ==="
-          # 尝试使用之前文档中提到的格式
-          echo "尝试: ./activator xx 63 ${{ inputs.target_sn }}"
-          ./activator xx 63 ${{ inputs.target_sn }} 2>&1 | tee ../output/attempt1.txt || echo "方法2失败"
+          # 方法2: 使用 ld.so 直接指定库路径
+          echo "=== 方法2: 使用 ld.so ==="
+          /lib64/ld-linux-x86-64.so.2 --library-path $(pwd) ./activator --help 2>&1 | tee ../output/method2.txt || echo "方法2失败"
           
-          echo "=== 方法3: 尝试修补一个真实文件 ==="
-          # 创建一个小的二进制文件进行测试
-          echo "创建测试文件..."
-          head -c 100 /dev/urandom > test_binary
-          echo "尝试修补测试文件..."
-          ./activator test_binary ${{ inputs.target_sn }} 2>&1 | tee ../output/attempt2.txt || echo "方法3失败"
+          # 方法3: 复制库文件到系统路径
+          echo "=== 方法3: 复制库到 /tmp ==="
+          cp libcrypto.so.1.1 /tmp/
+          LD_LIBRARY_PATH=/tmp ./activator --help 2>&1 | tee ../output/method3.txt || echo "方法3失败"
           
-          echo "=== 方法4: 尝试无参数运行 ==="
-          ./activator 2>&1 | tee ../output/attempt3.txt || echo "方法4失败"
+          # 方法4: 创建符号链接
+          echo "=== 方法4: 创建符号链接 ==="
+          sudo ln -sf $(pwd)/libcrypto.so.1.1 /usr/lib/ || true
+          sudo ldconfig
+          ./activator --help 2>&1 | tee ../output/method4.txt || echo "方法4失败"
 
-      - name: Analyze Results
+      - name: Generate License Key
         run: |
-          echo "=== 分析各方法输出 ==="
-          for attempt in output/attempt*.txt; do
-            if [ -f "$attempt" ]; then
-              echo "--- $attempt ---"
-              cat "$attempt"
-              echo ""
-              
-              # 尝试提取许可证信息
-              if grep -i "license\|key" "$attempt"; then
-                echo "找到许可证信息！"
-                grep -i "license\|key" "$attempt" > output/android_license_key.txt
-              fi
-            fi
-          done
+          echo "尝试生成许可证密钥..."
+          cd tools
           
-          # 检查是否成功生成密钥
-          if [ -f output/android_license_key.txt ] && [ -s output/android_license_key.txt ]; then
-            echo "成功生成密钥: $(cat output/android_license_key.txt)"
-          else
-            echo "未能自动生成密钥，请手动检查输出"
-            # 创建详细的调试报告
-            echo "=== 调试报告 ===" > output/debug_report.txt
-            echo "序列号: ${{ inputs.target_sn }}" >> output/debug_report.txt
-            echo "文件信息:" >> output/debug_report.txt
-            file tools/* >> output/debug_report.txt
-            echo "各方法输出:" >> output/debug_report.txt
-            cat output/attempt*.txt >> output/debug_report.txt 2>/dev/null || true
-          fi
+          # 使用最可能成功的方法
+          echo "序列号: ${{ inputs.target_sn }}"
+          
+          # 创建测试文件
+          head -c 100 /dev/urandom > test_file
+          
+          # 尝试生成密钥
+          LD_LIBRARY_PATH=$(pwd) ./activator test_file ${{ inputs.target_sn }} 2>&1 | tee ../output/raw_output.txt
+          
+          # 提取许可证信息
+          grep -i "license\|key" ../output/raw_output.txt > ../output/license_candidates.txt || true
+          
+          # 显示所有可能包含许可证的行
+          echo "可能的许可证信息:"
+          cat ../output/license_candidates.txt || echo "未找到许可证信息"
+
+      - name: Alternative Approach - Use Windows Version
+        run: |
+          echo "如果Linux版本无法工作，建议使用Windows版本的activator"
+          echo "请下载 activator2_win.zip 并在Windows系统中运行:"
+          echo "activator.exe xx 63 ${{ inputs.target_sn }}"
+          echo "预期的输出格式应该是:"
+          echo "License=序列号,63,XXXXXXXXXXXX"
+          echo "请将生成的密钥手动保存"
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -94,16 +101,20 @@ jobs:
           name: Debug-Results
           path: output/
 
-      - name: Final Message
+      - name: Final Instructions
         run: |
-          if [ -f output/android_license_key.txt ] && [ -s output/android_license_key.txt ]; then
-            echo "✅ 成功生成密钥！"
-            echo "密钥: $(cat output/android_license_key.txt)"
+          echo "=== 最终说明 ==="
+          if [ -f output/license_candidates.txt ] && [ -s output/license_candidates.txt ]; then
+            echo "找到可能的许可证信息:"
+            cat output/license_candidates.txt
+            echo "请检查上述输出，正确的格式应该是: License=序列号,63,XXXXXXXXXXXX"
           else
-            echo "❌ 无法自动生成密钥"
-            echo "请下载 Debug-Results Artifact 查看详细输出"
-            echo "根据输出内容，您可能需要："
-            echo "1. 检查 activator 工具版本是否正确"
-            echo "2. 尝试不同的序列号格式"
-            echo "3. 手动运行命令查看确切用法"
+            echo "❌ 无法在Linux环境中生成密钥"
+            echo "✅ 建议解决方案:"
+            echo "1. 下载 activator2_win.zip"
+            echo "2. 在Windows电脑上解压"
+            echo "3. 打开命令提示符，导航到解压目录"
+            echo "4. 运行命令: activator.exe xx 63 ${{ inputs.target_sn }}"
+            echo "5. 复制输出的 License=... 字符串"
+            echo "6. 在VirtualHere客户端中输入该密钥"
           fi
