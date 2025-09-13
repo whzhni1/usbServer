@@ -34,13 +34,18 @@ jobs:
       - name: Extract Activator Tools
         run: |
           # 解压 Linux 版的 activator 工具到 tools 目录
+          echo "解压 activator2_linux.zip..."
           unzip -o activator2_linux.zip -d tools/
+          echo "文件解压完成，列表如下："
+          ls -la tools/
           # 为所有文件添加执行权限
           chmod +x tools/*
+          echo "文件权限设置完成"
 
       - name: Set Library Path
         run: |
           # 设置库文件搜索路径，让系统能够找到 libcrypto.so.1.1
+          echo "设置库文件路径: LD_LIBRARY_PATH=$(pwd)/tools"
           echo "LD_LIBRARY_PATH=$(pwd)/tools" >> $GITHUB_ENV
 
       - name: Generate Android Key Only Mode
@@ -51,82 +56,58 @@ jobs:
           echo "设备数量: ${{ inputs.device_count }}"
           
           # 切换到工具目录并运行 activator
+          echo "切换到 tools 目录..."
           cd tools
-          # 生成密钥并精确提取 License= 行
+          echo "当前目录: $(pwd)"
+          echo "文件列表:"
+          ls -la
+          
+          # 显示完整的执行命令
+          echo "执行命令: ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }}"
+          
+          # 首先运行一次命令显示所有输出
+          echo "=== 完整输出 ==="
+          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }}
+          echo "=== 完整输出结束 ==="
+          
+          # 再次运行命令并提取密钥
+          echo "再次运行命令并提取 License= 行..."
           ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} 2>&1 | grep "^License=" | tee ../output/android_license_key.txt
           
+          # 显示原始输出内容
+          echo "原始输出内容:"
+          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} 2>&1 | cat
+          
           # 检查是否成功生成密钥
+          echo "检查密钥文件..."
           if [ ! -s ../output/android_license_key.txt ]; then
             echo "错误: 未能生成有效的许可证密钥！"
-            echo "请检查输入的序列号是否正确，以及 activator 工具是否正常工作。"
+            echo "密钥文件内容:"
+            cat ../output/android_license_key.txt || echo "文件为空或不存在"
+            echo "请检查:"
+            echo "1. 输入的序列号格式是否正确"
+            echo "2. activator 工具是否正常运行"
+            echo "3. 依赖库是否正确加载"
             exit 1
           fi
           
           echo "安卓密钥已生成并保存到 output/android_license_key.txt"
           echo "生成的密钥: $(cat ../output/android_license_key.txt)"
 
-      - name: Full Patch Mode
-        if: ${{ !inputs.android_key_only }}
+      - name: Test Library Loading
+        if: ${{ inputs.android_key_only }}
         run: |
-          echo "运行模式: 完整修补模式"
-          echo "初始修补使用的任意序列号: ${{ inputs.target_sn }}"
-          echo "设备数量: ${{ inputs.device_count }}"
-
-          # 遍历 ipk 目录下的所有文件
-          for server_binary in ipk/*; do
-            if [ -f "$server_binary" ]; then
-              filename=$(basename "$server_binary")
-              echo "正在处理文件: $filename"
-
-              # 复制原始文件到工作区
-              cp "$server_binary" .
-
-              # 步骤 1: 尝试解压
-              echo "尝试解压 $filename ..."
-              if upx -d "$filename"; then
-                echo "$filename 解压成功，将继续执行修补和压缩。"
-                needs_repack=true
-              else
-                echo "$filename 解压失败（可能未压缩），将继续执行修补，但跳过压缩。"
-                needs_repack=false
-              fi
-
-              # 步骤 2: 修补文件 (使用用户输入的任意SN进行初始修补)
-              cd tools
-              ./activator "../$filename" ${{ inputs.device_count }} ${{ inputs.target_sn }}
-              cd ..
-
-              # 步骤 3: 如果解压成功，则重新压缩
-              if [ "$needs_repack" = true ]; then
-                echo "重新压缩 $filename ..."
-                upx -9 "$filename"
-              fi
-
-              # 将处理后的文件移动到输出目录
-              mv "$filename" output/patched_binaries/
-              echo "已处理完成: $filename"
-            fi
-          done
-
-          # 为完整模式生成一个示例密钥（使用相同的任意SN）
+          echo "测试库文件加载..."
           cd tools
-          ./activator full_mode_example ${{ inputs.device_count }} ${{ inputs.target_sn }} 2>&1 | grep "^License=" | tee ../output/full_mode_license_example.txt
-          cd ..
-          echo "完整模式示例密钥: $(cat output/full_mode_license_example.txt)"
-
-      - name: Upload Patched Binaries (Full Mode)
-        if: ${{ !inputs.android_key_only }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Patched-Server-Binaries
-          path: output/patched_binaries/
-
-      - name: Upload Full Mode Example Key
-        if: ${{ !inputs.android_key_only }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Full-Mode-License-Example
-          path: output/full_mode_license_example.txt
+          echo "测试 libcrypto.so.1.1 是否存在:"
+          ls -la libcrypto.so.1.1
+          echo "测试 LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+          echo "测试 activator 依赖:"
+          ldd activator || echo "ldd 命令可能不可用，尝试其他方式"
+          
+          # 尝试直接设置库路径运行
+          echo "尝试直接设置库路径运行:"
+          LD_LIBRARY_PATH=$(pwd) ./activator --help || echo " activator --help 执行结果"
 
       - name: Upload Android License Key
         if: ${{ inputs.android_key_only }}
@@ -139,12 +120,11 @@ jobs:
         run: |
           if ${{ inputs.android_key_only }}; then
             echo "工作流完成！请从 Artifacts 下载 Android-License-Key 获取您的许可证密钥。"
-            echo "生成的密钥内容：$(cat output/android_license_key.txt)"
+            if [ -f output/android_license_key.txt ]; then
+              echo "生成的密钥内容：$(cat output/android_license_key.txt)"
+            else
+              echo "未生成有效的密钥文件"
+            fi
           else
-            echo "工作流完成！请从 Artifacts 下载："
-            echo "1. Patched-Server-Binaries - 所有已修补的服务器文件"
-            echo "2. Full-Mode-License-Example - 完整模式示例密钥"
-            echo "请注意：完整修补模式使用的是您输入的任意序列号进行的基础修补。"
-            echo "后续仍需在客户端中查看真实SN，并再次生成密钥进行激活。"
-            echo "示例密钥：$(cat output/full_mode_license_example.txt)"
+            echo "完整修补模式未执行"
           fi
