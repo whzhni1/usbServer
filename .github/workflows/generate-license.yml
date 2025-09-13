@@ -32,8 +32,34 @@ jobs:
         sudo apt-get install -y upx-ucl unzip
         
         # 解压activator
+        echo "解压 activator2_linux.zip..."
         unzip -o activator2_linux.zip
-        chmod +x activator
+        
+        # 查看解压后的文件
+        echo "解压后的文件："
+        ls -la
+        
+        # 给activator添加执行权限（尝试不同的可能文件名）
+        if [ -f "activator" ]; then
+          chmod +x activator
+          echo "✓ activator 文件已设置执行权限"
+        elif [ -f "activator2" ]; then
+          chmod +x activator2
+          mv activator2 activator
+          echo "✓ activator2 文件已重命名并设置执行权限"
+        else
+          echo "查找所有可能的activator文件："
+          find . -name "*activator*" -type f
+        fi
+        
+        # 验证activator是否可执行
+        if [ -x "./activator" ]; then
+          echo "✓ activator 可执行"
+          ./activator --help 2>&1 || echo "activator 无帮助信息"
+        else
+          echo "❌ activator 不可执行或不存在"
+          exit 1
+        fi
         
         # 创建输出目录
         mkdir -p patched_files
@@ -62,7 +88,7 @@ jobs:
             
             # 修补文件
             echo "修补 $filename..."
-            OUTPUT=$(./activator "$filename" "${{ github.event.inputs.serial_number }}" 2>&1)
+            OUTPUT=$(./activator "$filename" "${{ github.event.inputs.serial_number }}" 2>&1) || true
             echo "$OUTPUT"
             
             # 提取License信息
@@ -90,12 +116,23 @@ jobs:
       run: |
         echo "===== 生成安卓免root密钥 ====="
         
-        # 获取实际的序列号（如果用户使用了默认值，需要从服务器获取真实SN）
+        # 确认activator存在并可执行
+        if [ ! -x "./activator" ]; then
+          echo "❌ activator 不存在或不可执行"
+          ls -la activator* 2>/dev/null || echo "没有找到activator文件"
+          exit 1
+        fi
+        
+        # 使用用户输入的序列号和设备数量
         SN="${{ github.event.inputs.serial_number }}"
         DEVICES="${{ github.event.inputs.device_count }}"
         
+        echo "序列号: $SN"
+        echo "设备数量: $DEVICES"
+        
         # 执行activator生成密钥
-        OUTPUT=$(./activator xx "$DEVICES" "$SN" 2>&1)
+        echo "执行命令: ./activator xx $DEVICES $SN"
+        OUTPUT=$(./activator xx "$DEVICES" "$SN" 2>&1) || true
         echo "$OUTPUT"
         
         # 提取License信息
@@ -105,6 +142,10 @@ jobs:
           echo "" >> licenses/android_noroot_license.txt
           echo "使用方法：" >> licenses/android_noroot_license.txt
           echo "在Windows客户端 USB服务器 - 许可证 - 输入密钥中输入: $LICENSE" >> licenses/android_noroot_license.txt
+        else
+          echo "⚠️ 未能提取License信息"
+          echo "完整输出："
+          echo "$OUTPUT"
         fi
         
     - name: Create summary
@@ -118,7 +159,17 @@ jobs:
         echo "" >> patched_files/README.md
         
         echo "## 修补的文件" >> patched_files/README.md
-        ls -la patched_files/vhusbd* 2>/dev/null | awk '{print "- "$9" ("$5" bytes)"}' >> patched_files/README.md || echo "无文件" >> patched_files/README.md
+        if ls patched_files/vhusbd* 1> /dev/null 2>&1; then
+          for file in patched_files/vhusbd*; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              filesize=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo "unknown")
+              echo "- $filename ($filesize bytes)" >> patched_files/README.md
+            fi
+          done
+        else
+          echo "- 无文件" >> patched_files/README.md
+        fi
         echo "" >> patched_files/README.md
         
         if [ -f licenses/licenses.txt ]; then
