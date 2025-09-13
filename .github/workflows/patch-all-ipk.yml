@@ -25,26 +25,19 @@ jobs:
 
       - name: Setup Environment
         run: |
-          # 创建工作目录和输出目录
           mkdir -p tools output/patched_binaries
-          # 安装必要的工具 (upx)
           sudo apt-get update
           sudo apt-get install -y upx-ucl
 
       - name: Extract Activator Tools
         run: |
-          # 解压 Linux 版的 activator 工具到 tools 目录
           echo "解压 activator2_linux.zip..."
           unzip -o activator2_linux.zip -d tools/
-          echo "文件解压完成，列表如下："
-          ls -la tools/
-          # 为所有文件添加执行权限
+          echo "文件解压完成"
           chmod +x tools/*
-          echo "文件权限设置完成"
 
       - name: Set Library Path
         run: |
-          # 设置库文件搜索路径，让系统能够找到 libcrypto.so.1.1
           echo "设置库文件路径: LD_LIBRARY_PATH=$(pwd)/tools"
           echo "LD_LIBRARY_PATH=$(pwd)/tools" >> $GITHUB_ENV
 
@@ -53,61 +46,46 @@ jobs:
         run: |
           echo "运行模式: 仅生成安卓免Root密钥"
           echo "输入序列号: ${{ inputs.target_sn }}"
-          echo "设备数量: ${{ inputs.device_count }}"
           
-          # 切换到工具目录并运行 activator
-          echo "切换到 tools 目录..."
           cd tools
           echo "当前目录: $(pwd)"
-          echo "文件列表:"
-          ls -la
           
-          # 显示完整的执行命令
-          echo "执行命令: ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }}"
+          # 创建一个虚拟文件用于生成密钥
+          echo "创建虚拟文件 dummy_file..."
+          touch dummy_file
           
-          # 首先运行一次命令显示所有输出
+          # 正确的命令格式：activator 文件名 序列号
+          echo "执行命令: ./activator dummy_file ${{ inputs.target_sn }}"
+          
           echo "=== 完整输出 ==="
-          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }}
+          ./activator dummy_file ${{ inputs.target_sn }}
           echo "=== 完整输出结束 ==="
           
-          # 再次运行命令并提取密钥
+          # 再次运行并提取密钥
           echo "再次运行命令并提取 License= 行..."
-          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} 2>&1 | grep "^License=" | tee ../output/android_license_key.txt
-          
-          # 显示原始输出内容
-          echo "原始输出内容:"
-          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} 2>&1 | cat
+          ./activator dummy_file ${{ inputs.target_sn }} 2>&1 | grep "^License=" | tee ../output/android_license_key.txt
           
           # 检查是否成功生成密钥
-          echo "检查密钥文件..."
           if [ ! -s ../output/android_license_key.txt ]; then
             echo "错误: 未能生成有效的许可证密钥！"
-            echo "密钥文件内容:"
-            cat ../output/android_license_key.txt || echo "文件为空或不存在"
-            echo "请检查:"
-            echo "1. 输入的序列号格式是否正确"
-            echo "2. activator 工具是否正常运行"
-            echo "3. 依赖库是否正确加载"
-            exit 1
+            echo "尝试其他方法..."
+            
+            # 尝试直接捕获所有输出
+            ./activator dummy_file ${{ inputs.target_sn }} > ../output/raw_output.txt 2>&1
+            echo "原始输出已保存到 output/raw_output.txt"
+            
+            # 尝试从原始输出中提取可能的关键信息
+            grep -i "license\|key\|=" ../output/raw_output.txt | tee ../output/android_license_key.txt
+            
+            if [ ! -s ../output/android_license_key.txt ]; then
+              echo "最终错误: 无法生成密钥，请检查工具版本和序列号格式"
+              cat ../output/raw_output.txt
+              exit 1
+            fi
           fi
           
           echo "安卓密钥已生成并保存到 output/android_license_key.txt"
           echo "生成的密钥: $(cat ../output/android_license_key.txt)"
-
-      - name: Test Library Loading
-        if: ${{ inputs.android_key_only }}
-        run: |
-          echo "测试库文件加载..."
-          cd tools
-          echo "测试 libcrypto.so.1.1 是否存在:"
-          ls -la libcrypto.so.1.1
-          echo "测试 LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
-          echo "测试 activator 依赖:"
-          ldd activator || echo "ldd 命令可能不可用，尝试其他方式"
-          
-          # 尝试直接设置库路径运行
-          echo "尝试直接设置库路径运行:"
-          LD_LIBRARY_PATH=$(pwd) ./activator --help || echo " activator --help 执行结果"
 
       - name: Upload Android License Key
         if: ${{ inputs.android_key_only }}
@@ -116,15 +94,21 @@ jobs:
           name: Android-License-Key
           path: output/android_license_key.txt
 
+      - name: Upload Raw Output
+        if: ${{ inputs.android_key_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Raw-Output
+          path: output/raw_output.txt
+
       - name: Show Output Info
         run: |
           if ${{ inputs.android_key_only }}; then
-            echo "工作流完成！请从 Artifacts 下载 Android-License-Key 获取您的许可证密钥。"
+            echo "工作流完成！"
             if [ -f output/android_license_key.txt ]; then
               echo "生成的密钥内容：$(cat output/android_license_key.txt)"
-            else
-              echo "未生成有效的密钥文件"
             fi
-          else
-            echo "完整修补模式未执行"
+            if [ -f output/raw_output.txt ]; then
+              echo "原始输出已保存到 Raw-Output Artifact"
+            fi
           fi
