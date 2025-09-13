@@ -42,7 +42,6 @@ jobs:
         run: |
           # 设置库文件搜索路径，让系统能够找到 libcrypto.so.1.1
           echo "LD_LIBRARY_PATH=$(pwd)/tools" >> $GITHUB_ENV
-          echo "LIBRARY_PATH=$(pwd)/tools" >> $GITHUB_ENV
 
       - name: Generate Android Key Only Mode
         if: ${{ inputs.android_key_only }}
@@ -53,10 +52,18 @@ jobs:
           
           # 切换到工具目录并运行 activator
           cd tools
-          # 生成密钥，使用 'android_mode' 作为任意文件名参数
-          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} | tee ../output/android_license_key.txt
+          # 生成密钥并精确提取 License= 行
+          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} 2>&1 | grep "^License=" | tee ../output/android_license_key.txt
+          
+          # 检查是否成功生成密钥
+          if [ ! -s ../output/android_license_key.txt ]; then
+            echo "错误: 未能生成有效的许可证密钥！"
+            echo "请检查输入的序列号是否正确，以及 activator 工具是否正常工作。"
+            exit 1
+          fi
           
           echo "安卓密钥已生成并保存到 output/android_license_key.txt"
+          echo "生成的密钥: $(cat ../output/android_license_key.txt)"
 
       - name: Full Patch Mode
         if: ${{ !inputs.android_key_only }}
@@ -101,12 +108,25 @@ jobs:
             fi
           done
 
+          # 为完整模式生成一个示例密钥（使用相同的任意SN）
+          cd tools
+          ./activator full_mode_example ${{ inputs.device_count }} ${{ inputs.target_sn }} 2>&1 | grep "^License=" | tee ../output/full_mode_license_example.txt
+          cd ..
+          echo "完整模式示例密钥: $(cat output/full_mode_license_example.txt)"
+
       - name: Upload Patched Binaries (Full Mode)
         if: ${{ !inputs.android_key_only }}
         uses: actions/upload-artifact@v4
         with:
           name: Patched-Server-Binaries
           path: output/patched_binaries/
+
+      - name: Upload Full Mode Example Key
+        if: ${{ !inputs.android_key_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Full-Mode-License-Example
+          path: output/full_mode_license_example.txt
 
       - name: Upload Android License Key
         if: ${{ inputs.android_key_only }}
@@ -119,10 +139,12 @@ jobs:
         run: |
           if ${{ inputs.android_key_only }}; then
             echo "工作流完成！请从 Artifacts 下载 Android-License-Key 获取您的许可证密钥。"
-            echo "生成的密钥内容："
-            cat output/android_license_key.txt
+            echo "生成的密钥内容：$(cat output/android_license_key.txt)"
           else
-            echo "工作流完成！请从 Artifacts 下载 Patched-Server-Binaries 获取所有已修补的服务器文件。"
+            echo "工作流完成！请从 Artifacts 下载："
+            echo "1. Patched-Server-Binaries - 所有已修补的服务器文件"
+            echo "2. Full-Mode-License-Example - 完整模式示例密钥"
             echo "请注意：完整修补模式使用的是您输入的任意序列号进行的基础修补。"
             echo "后续仍需在客户端中查看真实SN，并再次生成密钥进行激活。"
+            echo "示例密钥：$(cat output/full_mode_license_example.txt)"
           fi
