@@ -23,7 +23,7 @@ jobs:
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     
     - name: Setup environment
       run: |
@@ -140,7 +140,7 @@ jobs:
         cp -r licenses/* patched_files/ 2>/dev/null || true
         
     - name: Upload patched files
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: virtualhere-patched-${{ github.event.inputs.serial_number }}
         path: patched_files/
