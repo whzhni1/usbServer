@@ -1,153 +1,119 @@
-name: 🛠️ Build Patched VirtualHere IPKs (All Architectures)
+name: VirtualHere Server Patcher and Key Generator
 
 on:
   workflow_dispatch:
     inputs:
-      serial_number:
-        description: 'Serial Number (SN) from your VirtualHere client'
+      target_sn:
+        description: "请输入序列号 (用于安卓密钥模式或完整模式的初始修补)"
         required: true
-        type: string
-        placeholder: 'Paste the s/n= value from your client here'
+        default: ""
       device_count:
-        description: 'Number of devices to activate (1-64)'
-        required: true
-        type: number
-        default: 63
-        min: 1
-        max: 64
+        description: "请输入客户端设备数量"
+        required: false
+        default: "63"
+      android_key_only:
+        description: "是否仅生成安卓免Root密钥？"
+        type: boolean
+        default: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 🛎️ Checkout Repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 📦 Unpack Tools
+      - name: Setup Environment
         run: |
-          unzip activator_linux.zip -d tools/
-          chmod +x tools/upx tools/activator
-          chmod +r tools/libcrypto.so.1.1
+          # 创建工作目录和输出目录
+          mkdir -p tools output/patched_binaries
+          # 安装必要的工具 (upx)
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
 
-      - name: 📋 List Available IPK Files
+      - name: Extract Activator Tools
         run: |
-          echo "Found the following IPK files to patch:"
-          ls -la ipk/*.ipk || echo "No IPK files found in ipk/ directory"
+          # 解压 Linux 版的 activator 工具到 tools 目录
+          unzip -o activator2_linux.zip -d tools/
+          # 为 activator 添加执行权限
+          chmod +x tools/activator
 
-      - name: 🔨 Process All IPK Files
+      - name: Generate Android Key Only Mode
+        if: ${{ inputs.android_key_only }}
         run: |
-          export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/tools:$LD_LIBRARY_PATH
-          echo "LD_LIBRARY_PATH set to: $LD_LIBRARY_PATH"
-          
-          for ORIGINAL_IPK in ipk/*.ipk; do
-            BASE_IPK_NAME=$(basename "$ORIGINAL_IPK")
-            NEW_IPK="${{ inputs.serial_number }}${BASE_IPK_NAME}"
-            
-            echo "----------------------------------------------------------"
-            echo "🔧 Processing: $BASE_IPK_NAME -> $NEW_IPK"
-            echo "----------------------------------------------------------"
+          echo "运行模式: 仅生成安卓免Root密钥"
+          echo "输入序列号: ${{ inputs.target_sn }}"
+          echo "设备数量: ${{ inputs.device_count }}"
+          # 生成密钥，使用 'android_mode' 作为任意文件名参数
+          ./tools/activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} | tee ./output/android_license_key.txt
+          echo "安卓密钥已生成并保存到 output/android_license_key.txt"
 
-            WORK_DIR=$(mktemp -d)
-            cd "$WORK_DIR"
-            
-            cp "$GITHUB_WORKSPACE/$ORIGINAL_IPK" ./
+      - name: Full Patch Mode
+        if: ${{ !inputs.android_key_only }}
+        run: |
+          echo "运行模式: 完整修补模式"
+          echo "初始修补使用的任意序列号: ${{ inputs.target_sn }}"
+          echo "设备数量: ${{ inputs.device_count }}"
 
-            mkdir extracted_ipk
-            tar -xzf "$BASE_IPK_NAME" -C extracted_ipk/
+          # 遍历 ipk 目录下的所有文件
+          for server_binary in ipk/*; do
+            if [ -f "$server_binary" ]; then
+              filename=$(basename "$server_binary")
+              echo "正在处理文件: $filename"
 
-            cd extracted_ipk
-            tar -xzf data.tar.gz
+              # 复制原始文件到工作区
+              cp "$server_binary" .
 
-            VHUSBD_FILES=$(find . -name "vhusbd" -type f)
-            
-            if [ -z "$VHUSBD_FILES" ]; then
-              echo "❌ Error: Could not find any vhusbd files in $BASE_IPK_NAME"
-              cd "$GITHUB_WORKSPACE"
-              rm -rf "$WORK_DIR"
-              continue
-            fi
-            
-            echo "Found vhusbd files:"
-            echo "$VHUSBD_FILES"
-            
-            PATCH_SUCCESS=false
-            
-            for VHUSBD_PATH in $VHUSBD_FILES; do
-              if [[ "$VHUSBD_PATH" == *"/etc/"* ]] || [[ "$VHUSBD_PATH" == *"/init.d/"* ]]; then
-                echo "⏭️  Skipping script file: $VHUSBD_PATH"
-                continue
-              fi
-              
-              echo "✅ Processing vhusbd at: $VHUSBD_PATH"
-              echo "File info:"
-              file "$VHUSBD_PATH"
-              ls -la "$VHUSBD_PATH"
-              
-              chmod +x "$VHUSBD_PATH"
-              echo "Added execute permission to file"
-
-              cd "$GITHUB_WORKSPACE"
-              
-              # UPX 解压
-              ./tools/upx -d "$WORK_DIR/$VHUSBD_PATH" || echo "UPX decompression failed or not needed, continuing..."
-
-              # 破解二进制文件
-              echo "Patching binary with SN: ${{ inputs.serial_number }} and device count: ${{ inputs.device_count }}"
-              ./tools/activator "$WORK_DIR/$VHUSBD_PATH" ${{ inputs.device_count }} ${{ inputs.serial_number }}
-              
-              if [ $? -eq 0 ]; then
-                echo "✅ Binary patched successfully"
-                PATCH_SUCCESS=true
-                
-                # UPX 重新压缩
-                ./tools/upx -9 "$WORK_DIR/$VHUSBD_PATH" || echo "UPX re-compression failed or skipped, continuing..."
-
-                # 重新打包
-                cd "$WORK_DIR/extracted_ipk"
-                tar -czf ../new_data.tar.gz ./*
-
-                cd ..
-                cp new_data.tar.gz extracted_ipk/data.tar.gz
-
-                cd extracted_ipk
-                tar -czf "$GITHUB_WORKSPACE/$NEW_IPK" ./*
-
-                echo "✅ Successfully created patched IPK: $NEW_IPK"
-                break
+              # 步骤 1: 尝试解压
+              echo "尝试解压 $filename ..."
+              if upx -d "$filename"; then
+                echo "$filename 解压成功，将继续执行修补和压缩。"
+                needs_repack=true
               else
-                echo "❌ Binary patching failed with error code: $?"
-                cd "$WORK_DIR/extracted_ipk"
+                echo "$filename 解压失败（可能未压缩），将继续执行修补，但跳过压缩。"
+                needs_repack=false
               fi
-            done
 
-            if [ "$PATCH_SUCCESS" = false ]; then
-              echo "❌ Failed to patch any vhusbd binary in $BASE_IPK_NAME"
+              # 步骤 2: 修补文件 (使用用户输入的任意SN进行初始修补)
+              ./tools/activator "$filename" ${{ inputs.device_count }} ${{ inputs.target_sn }}
+
+              # 步骤 3: 如果解压成功，则重新压缩
+              if [ "$needs_repack" = true ]; then
+                echo "重新压缩 $filename ..."
+                upx -9 "$filename"
+              fi
+
+              # 将处理后的文件移动到输出目录
+              mv "$filename" output/patched_binaries/
+              echo "已处理完成: $filename"
             fi
-
-            cd "$GITHUB_WORKSPACE"
-            rm -rf "$WORK_DIR"
-            
-            echo ""
-
           done
 
-      - name: 📤 Upload All Patched IPKs
+          # 步骤 4: 为完整模式也生成一个最终的密钥（可选，使用真实的SN）
+          # 这里假设您之后会用手工输入的真实SN再次生成密钥
+          # 如果您希望在此处也为完整模式生成一个密钥，可以取消下面的注释并提供一个SN
+          # ./tools/activator full_mode_patch ${{ inputs.device_count }} SOME_REAL_SN_HERE | tee ./output/full_mode_license_key.txt
+
+      - name: Upload Patched Binaries (Full Mode)
+        if: ${{ !inputs.android_key_only }}
         uses: actions/upload-artifact@v4
         with:
-          name: patched-ipks-${{ inputs.serial_number }}
-          path: ${{ inputs.serial_number }}*.ipk
+          name: Patched-Server-Binaries
+          path: output/patched_binaries/
 
-      - name: ✅ Completion Message
+      - name: Upload Android License Key
+        if: ${{ inputs.android_key_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-License-Key
+          path: output/android_license_key.txt
+
+      - name: Show Output Info
         run: |
-          echo "=========================================================="
-          echo "✅ Build completed successfully!"
-          echo "📦 Generated patched IPK files"
-          echo ""
-          echo "🔑 License Key for your client:"
-          echo "   ${{ inputs.serial_number }},${{ inputs.device_count }},MCACDngJMWWSrZJMfzCADSfwAg4aRfJN8P0ukEaj96XRLw=="
-          echo ""
-          echo "📖 Next steps:"
-          echo "   1. Download the patched IPK from Artifacts"
-          echo "   2. Install on your OpenWrt device"
-          echo "   3. Enter the license key in VirtualHere client"
-          echo "=========================================================="
+          if ${{ inputs.android_key_only }}; then
+            echo "工作流完成！请从 Artifacts 下载 Android-License-Key 获取您的许可证密钥。"
+          else
+            echo "工作流完成！请从 Artifacts 下载 Patched-Server-Binaries 获取所有已修补的服务器文件。"
+            echo "请注意：完整修补模式使用的是您输入的任意序列号进行的基础修补。"
+            echo "后续仍需在客户端中查看真实SN，并再次生成密钥进行激活。"
+          fi
