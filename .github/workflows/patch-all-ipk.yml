@@ -35,8 +35,14 @@ jobs:
         run: |
           # 解压 Linux 版的 activator 工具到 tools 目录
           unzip -o activator2_linux.zip -d tools/
-          # 为 activator 添加执行权限
-          chmod +x tools/activator
+          # 为所有文件添加执行权限
+          chmod +x tools/*
+
+      - name: Set Library Path
+        run: |
+          # 设置库文件搜索路径，让系统能够找到 libcrypto.so.1.1
+          echo "LD_LIBRARY_PATH=$(pwd)/tools" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=$(pwd)/tools" >> $GITHUB_ENV
 
       - name: Generate Android Key Only Mode
         if: ${{ inputs.android_key_only }}
@@ -44,8 +50,12 @@ jobs:
           echo "运行模式: 仅生成安卓免Root密钥"
           echo "输入序列号: ${{ inputs.target_sn }}"
           echo "设备数量: ${{ inputs.device_count }}"
+          
+          # 切换到工具目录并运行 activator
+          cd tools
           # 生成密钥，使用 'android_mode' 作为任意文件名参数
-          ./tools/activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} | tee ./output/android_license_key.txt
+          ./activator android_mode ${{ inputs.device_count }} ${{ inputs.target_sn }} | tee ../output/android_license_key.txt
+          
           echo "安卓密钥已生成并保存到 output/android_license_key.txt"
 
       - name: Full Patch Mode
@@ -75,7 +85,9 @@ jobs:
               fi
 
               # 步骤 2: 修补文件 (使用用户输入的任意SN进行初始修补)
-              ./tools/activator "$filename" ${{ inputs.device_count }} ${{ inputs.target_sn }}
+              cd tools
+              ./activator "../$filename" ${{ inputs.device_count }} ${{ inputs.target_sn }}
+              cd ..
 
               # 步骤 3: 如果解压成功，则重新压缩
               if [ "$needs_repack" = true ]; then
@@ -88,11 +100,6 @@ jobs:
               echo "已处理完成: $filename"
             fi
           done
-
-          # 步骤 4: 为完整模式也生成一个最终的密钥（可选，使用真实的SN）
-          # 这里假设您之后会用手工输入的真实SN再次生成密钥
-          # 如果您希望在此处也为完整模式生成一个密钥，可以取消下面的注释并提供一个SN
-          # ./tools/activator full_mode_patch ${{ inputs.device_count }} SOME_REAL_SN_HERE | tee ./output/full_mode_license_key.txt
 
       - name: Upload Patched Binaries (Full Mode)
         if: ${{ !inputs.android_key_only }}
@@ -112,6 +119,8 @@ jobs:
         run: |
           if ${{ inputs.android_key_only }}; then
             echo "工作流完成！请从 Artifacts 下载 Android-License-Key 获取您的许可证密钥。"
+            echo "生成的密钥内容："
+            cat output/android_license_key.txt
           else
             echo "工作流完成！请从 Artifacts 下载 Patched-Server-Binaries 获取所有已修补的服务器文件。"
             echo "请注意：完整修补模式使用的是您输入的任意序列号进行的基础修补。"
