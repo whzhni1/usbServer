@@ -4,17 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       target_sn:
-        description: "请输入序列号 (用于安卓密钥模式或完整模式的初始修补)"
+        description: "请输入序列号 (用于安卓密钥模式)"
         required: true
         default: ""
-      device_count:
-        description: "请输入客户端设备数量"
-        required: false
-        default: "63"
       android_key_only:
         description: "是否仅生成安卓免Root密钥？"
         type: boolean
-        default: false
+        default: true
 
 jobs:
   build:
@@ -25,90 +21,89 @@ jobs:
 
       - name: Setup Environment
         run: |
-          mkdir -p tools output/patched_binaries
+          mkdir -p tools output
           sudo apt-get update
-          sudo apt-get install -y upx-ucl
+          sudo apt-get install -y upx-ucl file
 
       - name: Extract Activator Tools
         run: |
           echo "解压 activator2_linux.zip..."
           unzip -o activator2_linux.zip -d tools/
-          echo "文件解压完成"
+          echo "文件信息:"
+          file tools/*
+          echo "文件大小:"
+          ls -la tools/
           chmod +x tools/*
 
-      - name: Set Library Path
+      - name: Test Different Approaches
         run: |
-          echo "设置库文件路径: LD_LIBRARY_PATH=$(pwd)/tools"
-          echo "LD_LIBRARY_PATH=$(pwd)/tools" >> $GITHUB_ENV
-
-      - name: Generate Android Key Only Mode
-        if: ${{ inputs.android_key_only }}
-        run: |
-          echo "运行模式: 仅生成安卓免Root密钥"
-          echo "输入序列号: ${{ inputs.target_sn }}"
-          
           cd tools
-          echo "当前目录: $(pwd)"
           
-          # 创建一个虚拟文件用于生成密钥
-          echo "创建虚拟文件 dummy_file..."
-          touch dummy_file
+          echo "=== 方法1: 直接运行查看帮助 ==="
+          ./activator --help || ./activator -h || echo "无法获取帮助信息"
           
-          # 正确的命令格式：activator 文件名 序列号
-          echo "执行命令: ./activator dummy_file ${{ inputs.target_sn }}"
+          echo "=== 方法2: 尝试不同的参数格式 ==="
+          # 尝试使用之前文档中提到的格式
+          echo "尝试: ./activator xx 63 ${{ inputs.target_sn }}"
+          ./activator xx 63 ${{ inputs.target_sn }} 2>&1 | tee ../output/attempt1.txt || echo "方法2失败"
           
-          echo "=== 完整输出 ==="
-          ./activator dummy_file ${{ inputs.target_sn }}
-          echo "=== 完整输出结束 ==="
+          echo "=== 方法3: 尝试修补一个真实文件 ==="
+          # 创建一个小的二进制文件进行测试
+          echo "创建测试文件..."
+          head -c 100 /dev/urandom > test_binary
+          echo "尝试修补测试文件..."
+          ./activator test_binary ${{ inputs.target_sn }} 2>&1 | tee ../output/attempt2.txt || echo "方法3失败"
           
-          # 再次运行并提取密钥
-          echo "再次运行命令并提取 License= 行..."
-          ./activator dummy_file ${{ inputs.target_sn }} 2>&1 | grep "^License=" | tee ../output/android_license_key.txt
+          echo "=== 方法4: 尝试无参数运行 ==="
+          ./activator 2>&1 | tee ../output/attempt3.txt || echo "方法4失败"
+
+      - name: Analyze Results
+        run: |
+          echo "=== 分析各方法输出 ==="
+          for attempt in output/attempt*.txt; do
+            if [ -f "$attempt" ]; then
+              echo "--- $attempt ---"
+              cat "$attempt"
+              echo ""
+              
+              # 尝试提取许可证信息
+              if grep -i "license\|key" "$attempt"; then
+                echo "找到许可证信息！"
+                grep -i "license\|key" "$attempt" > output/android_license_key.txt
+              fi
+            fi
+          done
           
           # 检查是否成功生成密钥
-          if [ ! -s ../output/android_license_key.txt ]; then
-            echo "错误: 未能生成有效的许可证密钥！"
-            echo "尝试其他方法..."
-            
-            # 尝试直接捕获所有输出
-            ./activator dummy_file ${{ inputs.target_sn }} > ../output/raw_output.txt 2>&1
-            echo "原始输出已保存到 output/raw_output.txt"
-            
-            # 尝试从原始输出中提取可能的关键信息
-            grep -i "license\|key\|=" ../output/raw_output.txt | tee ../output/android_license_key.txt
-            
-            if [ ! -s ../output/android_license_key.txt ]; then
-              echo "最终错误: 无法生成密钥，请检查工具版本和序列号格式"
-              cat ../output/raw_output.txt
-              exit 1
-            fi
+          if [ -f output/android_license_key.txt ] && [ -s output/android_license_key.txt ]; then
+            echo "成功生成密钥: $(cat output/android_license_key.txt)"
+          else
+            echo "未能自动生成密钥，请手动检查输出"
+            # 创建详细的调试报告
+            echo "=== 调试报告 ===" > output/debug_report.txt
+            echo "序列号: ${{ inputs.target_sn }}" >> output/debug_report.txt
+            echo "文件信息:" >> output/debug_report.txt
+            file tools/* >> output/debug_report.txt
+            echo "各方法输出:" >> output/debug_report.txt
+            cat output/attempt*.txt >> output/debug_report.txt 2>/dev/null || true
           fi
-          
-          echo "安卓密钥已生成并保存到 output/android_license_key.txt"
-          echo "生成的密钥: $(cat ../output/android_license_key.txt)"
 
-      - name: Upload Android License Key
-        if: ${{ inputs.android_key_only }}
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: Android-License-Key
-          path: output/android_license_key.txt
+          name: Debug-Results
+          path: output/
 
-      - name: Upload Raw Output
-        if: ${{ inputs.android_key_only }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Raw-Output
-          path: output/raw_output.txt
-
-      - name: Show Output Info
+      - name: Final Message
         run: |
-          if ${{ inputs.android_key_only }}; then
-            echo "工作流完成！"
-            if [ -f output/android_license_key.txt ]; then
-              echo "生成的密钥内容：$(cat output/android_license_key.txt)"
-            fi
-            if [ -f output/raw_output.txt ]; then
-              echo "原始输出已保存到 Raw-Output Artifact"
-            fi
+          if [ -f output/android_license_key.txt ] && [ -s output/android_license_key.txt ]; then
+            echo "✅ 成功生成密钥！"
+            echo "密钥: $(cat output/android_license_key.txt)"
+          else
+            echo "❌ 无法自动生成密钥"
+            echo "请下载 Debug-Results Artifact 查看详细输出"
+            echo "根据输出内容，您可能需要："
+            echo "1. 检查 activator 工具版本是否正确"
+            echo "2. 尝试不同的序列号格式"
+            echo "3. 手动运行命令查看确切用法"
           fi
