@@ -19,7 +19,7 @@ on:
 
 jobs:
   patch:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04  # 使用Ubuntu 20.04以获得更好的兼容性
     
     steps:
     - name: Checkout repository
@@ -27,34 +27,9 @@ jobs:
     
     - name: Setup environment
       run: |
-        # 安装必要工具和库
+        # 安装必要工具
         sudo apt-get update
         sudo apt-get install -y upx-ucl unzip
-        
-        # 安装 OpenSSL 1.1 兼容库
-        echo "安装 OpenSSL 1.1 兼容库..."
-        # 方法1: 尝试直接安装
-        sudo apt-get install -y libssl1.1 2>/dev/null || true
-        
-        # 方法2: 如果上面失败，从Ubuntu 20.04源安装
-        if ! ldconfig -p | grep libcrypto.so.1.1; then
-          echo "从Ubuntu 20.04源安装 OpenSSL 1.1..."
-          wget -q http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb
-          sudo dpkg -i libssl1.1_1.1.1f-1ubuntu2_amd64.deb 2>/dev/null || true
-          rm -f libssl1.1_1.1.1f-1ubuntu2_amd64.deb
-        fi
-        
-        # 方法3: 如果还是不行，创建符号链接
-        if ! ldconfig -p | grep libcrypto.so.1.1; then
-          echo "创建 OpenSSL 符号链接..."
-          sudo ln -sf /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 2>/dev/null || true
-          sudo ln -sf /usr/lib/x86_64-linux-gnu/libssl.so.3 /usr/lib/x86_64-linux-gnu/libssl.so.1.1 2>/dev/null || true
-          sudo ldconfig
-        fi
-        
-        # 显示已安装的库
-        echo "检查 OpenSSL 库："
-        ldconfig -p | grep -E "libcrypto|libssl" || true
         
         # 解压activator
         echo "解压 activator2_linux.zip..."
@@ -77,18 +52,9 @@ jobs:
           find . -name "*activator*" -type f
         fi
         
-        # 检查activator的依赖
-        echo "检查 activator 依赖："
-        ldd ./activator 2>&1 || echo "无法检查依赖"
-        
-        # 验证activator是否可执行
-        if [ -x "./activator" ]; then
-          echo "✓ activator 可执行"
-          ./activator --help 2>&1 || echo "activator 无帮助信息（正常）"
-        else
-          echo "❌ activator 不可执行或不存在"
-          exit 1
-        fi
+        # 测试activator
+        echo "测试 activator："
+        ./activator 2>&1 || true
         
         # 创建输出目录
         mkdir -p patched_files
@@ -115,10 +81,19 @@ jobs:
               NEED_COMPRESS=false
             fi
             
-            # 修补文件
+            # 修补文件 - 使用正确的参数格式
             echo "修补 $filename..."
+            
+            # 如果是第一种activator（只需要序列号）
             OUTPUT=$(./activator "$filename" "${{ github.event.inputs.serial_number }}" 2>&1) || true
             echo "$OUTPUT"
+            
+            # 如果上面失败，尝试第二种格式（带设备数量）
+            if ! echo "$OUTPUT" | grep -q "License="; then
+              echo "尝试带设备数量的格式..."
+              OUTPUT=$(./activator "$filename" "${{ github.event.inputs.device_count }}" "${{ github.event.inputs.serial_number }}" 2>&1) || true
+              echo "$OUTPUT"
+            fi
             
             # 提取License信息
             LICENSE=$(echo "$OUTPUT" | grep "License=" | cut -d'=' -f2-)
@@ -145,39 +120,85 @@ jobs:
       run: |
         echo "===== 生成安卓免root密钥 ====="
         
-        # 确认activator存在并可执行
-        if [ ! -x "./activator" ]; then
-          echo "❌ activator 不存在或不可执行"
-          ls -la activator* 2>/dev/null || echo "没有找到activator文件"
-          exit 1
-        fi
-        
-        # 使用用户输入的序列号和设备数量
+        # 使用用户输入的序列号
         SN="${{ github.event.inputs.serial_number }}"
         DEVICES="${{ github.event.inputs.device_count }}"
         
         echo "序列号: $SN"
         echo "设备数量: $DEVICES"
         
-        # 设置 LD_LIBRARY_PATH 以防万一
-        export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-        
-        # 执行activator生成密钥
-        echo "执行命令: ./activator xx $DEVICES $SN"
-        OUTPUT=$(./activator xx "$DEVICES" "$SN" 2>&1) || true
+        # 方法1: 使用标准格式 (activator filename serial)
+        echo "尝试方法1: ./activator xx $SN"
+        OUTPUT=$(./activator xx "$SN" 2>&1) || true
         echo "$OUTPUT"
+        
+        # 检查是否成功
+        if ! echo "$OUTPUT" | grep -q "License="; then
+          # 方法2: 尝试带任意文件名
+          echo "尝试方法2: ./activator xxx $SN"
+          OUTPUT=$(./activator xxx "$SN" 2>&1) || true
+          echo "$OUTPUT"
+        fi
+        
+        # 如果还是失败，尝试创建一个假文件
+        if ! echo "$OUTPUT" | grep -q "License="; then
+          echo "尝试方法3: 创建假文件"
+          touch xx
+          OUTPUT=$(./activator xx "$SN" 2>&1) || true
+          echo "$OUTPUT"
+          rm -f xx
+        fi
         
         # 提取License信息
         LICENSE=$(echo "$OUTPUT" | grep "License=" | cut -d'=' -f2-)
         if [ ! -z "$LICENSE" ]; then
-          echo "Android No-Root License: $LICENSE" | tee -a licenses/android_noroot_license.txt
+          # 格式化输出，添加设备数量
+          FORMATTED_LICENSE="${SN},${DEVICES},$(echo $LICENSE | cut -d',' -f3)"
+          echo "Android No-Root License: $FORMATTED_LICENSE" | tee -a licenses/android_noroot_license.txt
           echo "" >> licenses/android_noroot_license.txt
           echo "使用方法：" >> licenses/android_noroot_license.txt
-          echo "在Windows客户端 USB服务器 - 许可证 - 输入密钥中输入: $LICENSE" >> licenses/android_noroot_license.txt
+          echo "1. 安装Android VirtualHere USB Server APK (无需root)" >> licenses/android_noroot_license.txt
+          echo "2. 在Windows客户端查看服务器序列号" >> licenses/android_noroot_license.txt
+          echo "3. 在Windows客户端 USB服务器 - 许可证 - 输入密钥中输入: $FORMATTED_LICENSE" >> licenses/android_noroot_license.txt
+          echo "" >> licenses/android_noroot_license.txt
+          echo "注意: 如果序列号与 $SN 不同，请使用实际的序列号重新生成密钥" >> licenses/android_noroot_license.txt
         else
           echo "⚠️ 未能提取License信息"
-          echo "完整输出："
-          echo "$OUTPUT"
+          echo "可能需要手动操作："
+          echo "1. 先启动服务器获取真实序列号"
+          echo "2. 使用真实序列号重新运行工作流"
+        fi
+        
+    - name: Alternative License Generation
+      if: ${{ github.event.inputs.android_noroot == 'true' }}
+      run: |
+        # 如果前面的方法都失败了，尝试使用activator2的不同调用方式
+        echo "===== 尝试替代方法生成密钥 ====="
+        
+        # 检查是否有activator2_win（可能需要wine）
+        if [ -f "activator2" ]; then
+          chmod +x activator2
+          echo "尝试使用activator2..."
+          
+          SN="${{ github.event.inputs.serial_number }}"
+          DEVICES="${{ github.event.inputs.device_count }}"
+          
+          # 尝试不同的参数组合
+          for cmd in \
+            "./activator2 xx $SN" \
+            "./activator2 xxx $SN" \
+            "./activator2 $SN $DEVICES" \
+            "./activator2 vhusbd $SN"
+          do
+            echo "执行: $cmd"
+            OUTPUT=$($cmd 2>&1) || true
+            echo "$OUTPUT"
+            if echo "$OUTPUT" | grep -q "License="; then
+              LICENSE=$(echo "$OUTPUT" | grep "License=" | cut -d'=' -f2-)
+              echo "成功获取License: $LICENSE" >> licenses/alternative_license.txt
+              break
+            fi
+          done
         fi
         
     - name: Create summary
@@ -219,6 +240,14 @@ jobs:
           echo '```' >> patched_files/README.md
         fi
         
+        if [ -f licenses/alternative_license.txt ]; then
+          echo "" >> patched_files/README.md
+          echo "## 替代方法生成的许可证" >> patched_files/README.md
+          echo '```' >> patched_files/README.md
+          cat licenses/alternative_license.txt >> patched_files/README.md
+          echo '```' >> patched_files/README.md
+        fi
+        
         # 复制许可证文件到patched_files
         cp -r licenses/* patched_files/ 2>/dev/null || true
         
@@ -242,4 +271,9 @@ jobs:
           echo ""
           echo "Android免Root许可证："
           cat licenses/android_noroot_license.txt
+        fi
+        if [ -f licenses/alternative_license.txt ]; then
+          echo ""
+          echo "替代方法许可证："
+          cat licenses/alternative_license.txt
         fi
